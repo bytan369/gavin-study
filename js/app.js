@@ -1,0 +1,1093 @@
+(function () {
+  'use strict';
+
+  const SC = window.Scoring;
+  const KEY = 'gavin-study-v1';
+  const DAY = 86400000;
+  const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const FOCUS_RATE = [['😵', '很分心'], ['😕', '有点分心'], ['😐', '一般'], ['🙂', '比较专注'], ['😎', '非常专注']];
+  const MASTERY_RATE = [['😣', '没学懂'], ['🤔', '有点懵'], ['😐', '一般'], ['🙂', '基本会了'], ['🤩', '完全掌握']];
+
+  let state = load();
+  let currentTab = 'study';
+  let statsRange = 7;
+  let historyFilter = 'all';
+  const expanded = new Set();
+  let form = null;
+
+  const $ = (sel, el = document) => el.querySelector(sel);
+  const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
+
+  // ---------------- 存储 ----------------
+  function defaults() {
+    return {
+      version: 1,
+      sessions: [],
+      running: null,
+      settings: { name: '', goal: 120, theme: 'auto', hidden: [], custom: [] },
+      last: { subject: 'math', type: 'practice' },
+    };
+  }
+
+  function load() {
+    const d = defaults();
+    try {
+      const raw = JSON.parse(localStorage.getItem(KEY));
+      if (raw && Array.isArray(raw.sessions)) {
+        return Object.assign(d, raw, {
+          settings: Object.assign(d.settings, raw.settings),
+          last: Object.assign(d.last, raw.last),
+        });
+      }
+    } catch (e) { /* 读取失败时使用默认数据 */ }
+    return d;
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(state));
+    } catch (e) {
+      toast('保存失败：浏览器存储不可用或已满');
+    }
+  }
+
+  // ---------------- 工具函数 ----------------
+  const pad = (n) => String(n).padStart(2, '0');
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const round1 = (v) => Math.round(v * 10) / 10;
+
+  function fmtClock(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+  }
+  function fmtHM(ts) {
+    const d = new Date(ts);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function fmtHMS(ts) {
+    const d = new Date(ts);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  function fmtMin(min) {
+    const m = Math.round(min);
+    if (m < 1) return min > 0 ? '不足1分钟' : '0分钟';
+    if (m < 60) return `${m}分钟`;
+    return `${Math.floor(m / 60)}小时${m % 60 ? (m % 60) + '分' : ''}`;
+  }
+  function dayKey(ts) {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  function keyToDate(k) {
+    const [y, m, d] = k.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  }
+  function dayLabel(k) {
+    const d = keyToDate(k);
+    const today = dayKey(Date.now());
+    const yest = dayKey(Date.now() - DAY);
+    const base = `${d.getMonth() + 1}月${d.getDate()}日 ${WEEK[d.getDay()]}`;
+    if (k === today) return `今天 · ${base}`;
+    if (k === yest) return `昨天 · ${base}`;
+    return base;
+  }
+  function lastDays(n) {
+    const out = [];
+    const now = new Date();
+    for (let i = n - 1; i >= 0; i--) {
+      out.push(dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i).getTime()));
+    }
+    return out;
+  }
+  function greet() {
+    const h = new Date().getHours();
+    if (h < 5) return '夜深了';
+    if (h < 11) return '早上好';
+    if (h < 13) return '中午好';
+    if (h < 18) return '下午好';
+    return '晚上好';
+  }
+
+  // ---------------- 科目 ----------------
+  function allSubjects() {
+    const base = SC.SUBJECTS.filter((s) => s.id !== 'other');
+    const other = SC.SUBJECTS.find((s) => s.id === 'other');
+    return base.concat(state.settings.custom, [other]);
+  }
+  function visibleSubjects() {
+    return allSubjects().filter((s) => !state.settings.hidden.includes(s.id));
+  }
+  function getSubject(id) {
+    return allSubjects().find((s) => s.id === id) || { id, name: '已删除科目', emoji: '📝', color: '#868e96', quiz: 0.5 };
+  }
+
+  // 加权平均（按有效学习时长）
+  function weightedAvg(list, field) {
+    const w = list.reduce((a, s) => a + Math.max(s.activeMin, 1), 0);
+    if (!w) return null;
+    return Math.round(list.reduce((a, s) => a + s[field] * Math.max(s.activeMin, 1), 0) / w);
+  }
+  function sessionsByDay() {
+    const map = {};
+    for (const s of state.sessions) (map[dayKey(s.start)] = map[dayKey(s.start)] || []).push(s);
+    return map;
+  }
+  function streakDays() {
+    const map = sessionsByDay();
+    let d = new Date();
+    if (!map[dayKey(d.getTime())]) d = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+    let n = 0;
+    while (map[dayKey(d.getTime())]) {
+      n++;
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+    }
+    return n;
+  }
+
+  function badge(score, label) {
+    return `<span class="badge ${SC.level(score).key}">${label} ${score}</span>`;
+  }
+
+  // ---------------- 计时 ----------------
+  function runTimes(run, end) {
+    const stop = end || run.end || Date.now();
+    const totalMs = Math.max(0, stop - run.start);
+    let pausedMs = 0;
+    for (const p of run.pauses) pausedMs += Math.max(0, Math.min(p.end || stop, stop) - p.start);
+    return { totalMs, pausedMs, activeMs: Math.max(0, totalMs - pausedMs) };
+  }
+  function isPaused(run) {
+    const p = run.pauses[run.pauses.length - 1];
+    return !!p && !p.end;
+  }
+
+  function startStudy() {
+    state.running = {
+      subject: state.last.subject,
+      type: state.last.type,
+      start: Date.now(),
+      pauses: [],
+    };
+    save();
+    renderStudy();
+    toast(`开始学习 ${fmtHMS(state.running.start)}，加油！`);
+  }
+
+  function togglePause() {
+    const run = state.running;
+    if (!run) return;
+    if (isPaused(run)) run.pauses[run.pauses.length - 1].end = Date.now();
+    else run.pauses.push({ start: Date.now(), end: null });
+    save();
+    renderStudy();
+  }
+
+  function endStudy() {
+    const run = state.running;
+    if (!run) return;
+    run.end = Date.now();
+    if (isPaused(run)) {
+      run.pauses[run.pauses.length - 1].end = run.end;
+      run.closedAtEnd = true;
+    }
+    save();
+    openFinishForm();
+  }
+
+  function resumeFromForm() {
+    const run = state.running;
+    if (!run) return;
+    if (run.closedAtEnd) run.pauses[run.pauses.length - 1].end = null;
+    delete run.end;
+    delete run.closedAtEnd;
+    form = null;
+    save();
+    closeModal();
+    renderStudy();
+  }
+
+  function discardStudy() {
+    if (!confirm('确定放弃本次学习吗？本次计时不会被记录。')) return;
+    state.running = null;
+    form = null;
+    save();
+    closeModal();
+    renderStudy();
+    toast('已放弃本次记录');
+  }
+
+  function updateClock() {
+    const run = state.running;
+    const clock = $('#clock');
+    if (!run || run.end || !clock) {
+      if (!run) document.title = '学习小站';
+      return;
+    }
+    const t = runTimes(run);
+    clock.textContent = fmtClock(t.activeMs);
+    const meta = $('#timer-meta');
+    if (meta) {
+      meta.textContent = `开始于 ${fmtHMS(run.start)} · 暂停 ${run.pauses.length} 次` +
+        (t.pausedMs >= 60000 ? `（共 ${fmtMin(t.pausedMs / 60000)}）` : '');
+    }
+    document.title = `${isPaused(run) ? '⏸' : '⏱'} ${fmtClock(t.activeMs)} · 学习小站`;
+  }
+
+  // ---------------- 学习页 ----------------
+  function renderStudy() {
+    const el = $('#tab-study');
+    el.innerHTML = state.running ? timerView() : idleView();
+    updateClock();
+  }
+
+  function idleView() {
+    const today = (sessionsByDay()[dayKey(Date.now())] || []).sort((a, b) => b.start - a.start);
+    const mins = today.reduce((a, s) => a + s.activeMin, 0);
+    const goal = state.settings.goal;
+    const pct = Math.min(100, Math.round((mins / goal) * 100));
+    const streak = streakDays();
+    const name = state.settings.name || '同学';
+    const now = new Date();
+    const sub = state.last.subject;
+    const type = SC.getType(state.last.type);
+    const subjObj = getSubject(sub);
+
+    const subjects = visibleSubjects();
+    if (!subjects.some((s) => s.id === sub)) subjects.unshift(subjObj);
+
+    return `
+    <div class="card">
+      <div class="hello">
+        <div>
+          <h2>${greet()}，${esc(name)} 👋</h2>
+          <p>${now.getMonth() + 1}月${now.getDate()}日 ${WEEK[now.getDay()]}</p>
+        </div>
+        ${streak ? `<div class="badge a">🔥 连续学习 ${streak} 天</div>` : ''}
+      </div>
+      <div class="goal">
+        <div class="goal-text"><span>今日目标 ${fmtMin(goal)}</span><span>${pct >= 100 ? '🎉 已完成' : `已完成 ${pct}%`}</span></div>
+        <div class="goal-bar"><div class="goal-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><div class="kpi-label">今日学习</div><div class="kpi-value">${Math.round(mins)}<small>分钟</small></div></div>
+        <div class="kpi"><div class="kpi-label">学习次数</div><div class="kpi-value">${today.length}<small>次</small></div></div>
+        <div class="kpi"><div class="kpi-label">平均专注度</div><div class="kpi-value">${today.length ? weightedAvg(today, 'focus') : '–'}</div></div>
+        <div class="kpi"><div class="kpi-label">平均学习效果</div><div class="kpi-value">${today.length ? weightedAvg(today, 'effect') : '–'}</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">① 选择科目 <small>可在设置中增减科目</small></h3>
+      <div class="subject-grid">
+        ${subjects.map((s) => `
+          <button class="subject-btn ${s.id === sub ? 'selected' : ''}" style="--c:${esc(s.color)}" data-act="subject" data-id="${esc(s.id)}">
+            <span class="emo">${esc(s.emoji)}</span>${esc(s.name)}
+          </button>`).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">② 学习方式</h3>
+      <div class="type-list">
+        ${SC.TYPES.map((t) => `<button class="chip ${t.id === type.id ? 'selected' : ''}" data-act="type" data-id="${t.id}">${t.icon} ${t.name}</button>`).join('')}
+      </div>
+      <div class="type-hint">结束时需要填写：${type.hint}（单位：${SC.unitOf(type, subjObj)}）</div>
+    </div>
+
+    <div class="card start-area">
+      <button class="btn btn-primary btn-lg" data-act="start">▶ 开始学习 · ${esc(subjObj.emoji)} ${esc(subjObj.name)}</button>
+      <p>点击即以当前时间作为开始时间，结束时同样自动记录</p>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">今天的学习 <small>${today.length ? `共 ${fmtMin(mins)}` : ''}</small></h3>
+      ${today.length ? today.map(recordItem).join('') : `<div class="empty"><div class="big">🌱</div>今天还没有学习记录，开始第一段学习吧！</div>`}
+    </div>`;
+  }
+
+  function timerView() {
+    const run = state.running;
+    const s = getSubject(run.subject);
+    const t = SC.getType(run.type);
+    const paused = isPaused(run);
+    return `
+    <div class="card timer-card" style="--c:${esc(s.color)}">
+      <div class="timer-subject">${esc(s.emoji)} ${esc(s.name)} <span class="type">· ${t.icon} ${t.name}</span></div>
+      <div class="timer-status ${paused ? 'off' : 'on'}"><span class="dot"></span>${paused ? '已暂停' : '专注学习中'}</div>
+      <div class="timer-clock" id="clock">00:00:00</div>
+      <div class="timer-meta" id="timer-meta"></div>
+      <div class="timer-actions">
+        <button class="btn btn-lg ${paused ? 'btn-good' : 'btn-warn'}" data-act="pause">${paused ? '▶ 继续' : '⏸ 暂停'}</button>
+        <button class="btn btn-lg btn-primary" data-act="end">⏹ 结束学习</button>
+      </div>
+      <div style="margin-top:14px"><button class="btn btn-ghost small" data-act="discard">放弃本次记录</button></div>
+    </div>
+    <div class="card small muted">
+      💡 计时显示的是<b>有效学习时间</b>（不含暂停）。每次暂停会算作一次中断，结束后会根据有效时长、中断次数和学习量自动评分。
+      本次需要记录：${t.hint}。
+    </div>`;
+  }
+
+  // ---------------- 结束表单 ----------------
+  function openFinishForm() {
+    const run = state.running;
+    if (!run || !run.end) return;
+    if (!form) {
+      form = { amount: '', correct: '', interruptions: run.pauses.length, focusSelf: 4, mastery: 3, note: '', error: '' };
+    }
+    renderFinishForm();
+  }
+
+  function rateButtons(field, items) {
+    return `<div class="rate">${items.map((it, i) => `
+      <button type="button" class="${form[field] === i + 1 ? 'selected' : ''}" data-act="rate" data-field="${field}" data-v="${i + 1}">
+        <span class="emo">${it[0]}</span>${it[1]}
+      </button>`).join('')}</div>`;
+  }
+
+  function renderFinishForm() {
+    const run = state.running;
+    const s = getSubject(run.subject);
+    const t = SC.getType(run.type);
+    const unit = SC.unitOf(t, s);
+    const tm = runTimes(run);
+    const short = tm.activeMs < 60000;
+    openModal(`
+      <h3>${esc(s.emoji)} ${esc(s.name)} · ${t.name}</h3>
+      <div class="muted small">学习结束，记录一下这次的成果吧</div>
+      <div class="time-box">
+        <div>🕐 开始 <b>${fmtHMS(run.start)}</b> → 结束 <b>${fmtHMS(run.end)}</b></div>
+        <div>⏱️ 有效学习 <b>${fmtMin(tm.activeMs / 60000)}</b>${tm.pausedMs > 0 ? `，暂停 ${fmtMin(tm.pausedMs / 60000)}` : ''}</div>
+        ${short ? '<div class="err">本次有效学习不足 1 分钟，评分参考意义不大</div>' : ''}
+      </div>
+      <form id="finish-form" novalidate>
+        <div class="field">
+          <label for="f-amount">学习量</label>
+          <div class="input-unit"><input class="input" id="f-amount" name="amount" type="number" inputmode="numeric" min="0" step="1" placeholder="0" value="${esc(form.amount)}"><span>${esc(unit)}</span></div>
+          <div class="help">${t.hint}</div>
+        </div>
+        ${t.correct ? `
+        <div class="field">
+          <label for="f-correct">做对的题数${t.correct === 'optional' ? '<span class="muted small">（选填）</span>' : ''}</label>
+          <div class="input-unit"><input class="input" id="f-correct" name="correct" type="number" inputmode="numeric" min="0" step="1" placeholder="${t.correct === 'optional' ? '不知道可不填' : '0'}" value="${esc(form.correct)}"><span>题</span></div>
+        </div>` : ''}
+        <div class="field">
+          <div class="label">走神 / 被打断次数</div>
+          <div class="stepper">
+            <button type="button" data-act="step" data-d="-1">−</button>
+            <output id="f-int">${form.interruptions}</output>
+            <button type="button" data-act="step" data-d="1">＋</button>
+          </div>
+          <div class="help">已自动填入暂停次数（${run.pauses.length} 次），可以按实际走神情况修改</div>
+        </div>
+        <div class="field"><div class="label">这次专注程度</div>${rateButtons('focusSelf', FOCUS_RATE)}</div>
+        <div class="field"><div class="label">内容掌握程度</div>${rateButtons('mastery', MASTERY_RATE)}</div>
+        <div class="field">
+          <label for="f-note">学习内容 / 心得 <span class="muted small">（选填）</span></label>
+          <textarea class="input" id="f-note" name="note" maxlength="500" placeholder="例如：二次函数第3节练习，顶点式还不太熟">${esc(form.note)}</textarea>
+        </div>
+        ${form.error ? `<div class="err">${esc(form.error)}</div>` : ''}
+        <div class="form-actions">
+          <button type="button" class="btn" data-act="back">↩ 继续计时</button>
+          <button type="submit" class="btn btn-primary">保存并评分</button>
+        </div>
+        <div style="text-align:center;margin-top:8px"><button type="button" class="btn btn-ghost small" data-act="discard">放弃本次记录</button></div>
+      </form>`);
+  }
+
+  function readFormInputs() {
+    const f = $('#finish-form');
+    if (!f) return;
+    form.amount = f.amount.value;
+    if (f.correct) form.correct = f.correct.value;
+    form.note = f.note.value;
+  }
+
+  function submitFinish() {
+    readFormInputs();
+    const run = state.running;
+    const t = SC.getType(run.type);
+    const amount = form.amount === '' ? NaN : Number(form.amount);
+    const correct = form.correct === '' ? null : Number(form.correct);
+    let error = '';
+    if (!Number.isFinite(amount) || amount < 0) error = '请填写学习量（没有可填 0）';
+    else if (t.correct === 'required' && amount > 0 && correct === null) error = '请填写做对的题数';
+    else if (correct !== null && (!Number.isFinite(correct) || correct < 0 || correct > amount)) error = '做对的题数应在 0 到总题数之间';
+    if (error) {
+      form.error = error;
+      renderFinishForm();
+      return;
+    }
+
+    const subject = getSubject(run.subject);
+    const tm = runTimes(run);
+    const totalMin = round1(tm.totalMs / 60000);
+    const activeMin = round1(tm.activeMs / 60000);
+    const result = SC.computeScores({
+      subject, type: run.type, totalMin, activeMin,
+      interruptions: form.interruptions, amount, correct: t.correct ? correct : null,
+      focusSelf: form.focusSelf, mastery: form.mastery,
+    });
+    const session = {
+      id: `s${run.start}${Math.random().toString(36).slice(2, 6)}`,
+      subject: run.subject,
+      type: run.type,
+      start: run.start,
+      end: run.end,
+      pauses: run.pauses.length,
+      totalMin,
+      activeMin,
+      pausedMin: round1(tm.pausedMs / 60000),
+      amount,
+      correct: t.correct ? correct : null,
+      interruptions: form.interruptions,
+      focusSelf: form.focusSelf,
+      mastery: form.mastery,
+      note: form.note.trim(),
+      focus: result.focus,
+      effect: result.effect,
+      focusParts: result.focusParts,
+      effectParts: result.effectParts,
+      metrics: result.metrics,
+      tips: result.tips,
+    };
+    state.sessions.push(session);
+    state.running = null;
+    form = null;
+    save();
+    renderStudy();
+    showResult(session, true);
+  }
+
+  // ---------------- 评分结果 ----------------
+  function ring(score, label, color) {
+    const r = 54;
+    const c = 2 * Math.PI * r;
+    const lv = SC.level(score);
+    return `<div class="ring">
+      <svg viewBox="0 0 132 132" aria-hidden="true">
+        <circle class="track" cx="66" cy="66" r="${r}" fill="none" stroke-width="12"/>
+        <circle class="val" cx="66" cy="66" r="${r}" fill="none" stroke-width="12" stroke="${color}"
+          stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${c.toFixed(2)}" data-off="${(c * (1 - score / 100)).toFixed(2)}"/>
+      </svg>
+      <div class="ring-num"><b>${score}</b><span>满分 100</span></div>
+      <div class="ring-label">${label} · ${lv.emoji} ${lv.label}</div>
+    </div>`;
+  }
+
+  function partsList(parts, labels, color) {
+    return `<div class="parts">${Object.keys(labels).map((k) => {
+      const v = parts[k] || 0;
+      const m = labels[k].max;
+      return `<div class="part-row"><span>${labels[k].name}</span>
+        <div class="part-bar" style="--c:${color}"><i style="width:${Math.round((v / m) * 100)}%"></i></div>
+        <span class="v">${Math.round(v)}/${m}</span></div>`;
+    }).join('')}</div>`;
+  }
+
+  function showResult(s, fresh) {
+    const subj = getSubject(s.subject);
+    const t = SC.getType(s.type);
+    const unit = SC.unitOf(t, subj);
+    const m = s.metrics || {};
+    openModal(`
+      <h3>${fresh ? '🎉 学习完成！' : '评分详情'}</h3>
+      <div class="muted small">${esc(subj.emoji)} ${esc(subj.name)} · ${t.name} · ${fmtHM(s.start)}–${fmtHM(s.end)} · 有效 ${fmtMin(s.activeMin)} · ${s.amount} ${esc(unit)}</div>
+      <div class="score-rings">
+        ${ring(s.focus, '专注度', 'var(--series-1)')}
+        ${ring(s.effect, '学习效果', 'var(--series-2)')}
+      </div>
+      <h4 style="margin:8px 0">专注度构成</h4>
+      ${partsList(s.focusParts, SC.FOCUS_LABELS, 'var(--series-1)')}
+      <h4 style="margin:14px 0 8px">学习效果构成</h4>
+      ${partsList(s.effectParts, SC.EFFECT_LABELS, 'var(--series-2)')}
+      <div class="muted small" style="margin-top:10px">
+        有效时长占比 ${m.activeRatio}% · 每30分钟中断 ${m.interruptRate} 次 · 学习效率 ${m.pace}%（参考量 ${m.expected} ${esc(unit)}）${m.accuracy != null ? ` · 正确率 ${m.accuracy}%` : ''}
+      </div>
+      <h4 style="margin:14px 0 8px">小建议</h4>
+      <ul class="tips">${(s.tips || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+      <div class="form-actions"><button class="btn btn-primary" data-act="close">好的</button></div>`);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      $$('.ring .val').forEach((c) => { c.style.strokeDashoffset = c.dataset.off; });
+    }));
+  }
+
+  // ---------------- 记录页 ----------------
+  function recordItem(s) {
+    const subj = getSubject(s.subject);
+    const t = SC.getType(s.type);
+    const unit = SC.unitOf(t, subj);
+    const open = expanded.has(s.id);
+    return `<div class="rec">
+      <button class="rec-main" data-act="toggle" data-id="${esc(s.id)}" aria-expanded="${open}">
+        <div class="rec-icon" style="--c:${esc(subj.color)}">${esc(subj.emoji)}</div>
+        <div class="rec-body">
+          <div class="rec-title">${esc(subj.name)}<span class="type">${t.icon} ${t.name}</span></div>
+          <div class="rec-sub">${fmtHM(s.start)}–${fmtHM(s.end)} · ${fmtMin(s.activeMin)} · ${s.amount} ${esc(unit)}</div>
+        </div>
+        <div class="rec-scores">${badge(s.focus, '专注')}${badge(s.effect, '效果')}</div>
+      </button>
+      ${open ? `<div class="rec-detail">
+        <div class="facts">
+          <span>🕐 ${fmtHMS(s.start)} – ${fmtHMS(s.end)}</span>
+          <span>⏱️ 总时长 ${fmtMin(s.totalMin)}</span>
+          <span>✅ 有效学习 ${fmtMin(s.activeMin)}</span>
+          <span>⏸ 暂停 ${s.pauses} 次</span>
+          <span>📦 学习量 ${s.amount} ${esc(unit)}</span>
+          ${s.correct != null ? `<span>🎯 正确率 ${s.amount ? Math.round((s.correct / s.amount) * 100) : 0}%（${s.correct}/${s.amount}）</span>` : ''}
+          <span>💭 走神/中断 ${s.interruptions} 次</span>
+          <span>🙂 自评专注 ${s.focusSelf}/5</span>
+          <span>📘 掌握程度 ${s.mastery}/5</span>
+        </div>
+        ${s.note ? `<div class="note">${esc(s.note)}</div>` : ''}
+        <div class="row">
+          <button class="btn small" data-act="detail" data-id="${esc(s.id)}">📊 评分详情</button>
+          <span class="spacer"></span>
+          <button class="btn btn-danger small" data-act="delete" data-id="${esc(s.id)}">删除</button>
+        </div>
+      </div>` : ''}
+    </div>`;
+  }
+
+  function renderHistory() {
+    const el = $('#tab-history');
+    const used = Array.from(new Set(state.sessions.map((s) => s.subject)));
+    if (historyFilter !== 'all' && !used.includes(historyFilter)) historyFilter = 'all';
+    const list = state.sessions
+      .filter((s) => historyFilter === 'all' || s.subject === historyFilter)
+      .sort((a, b) => b.start - a.start);
+    const groups = [];
+    for (const s of list) {
+      const k = dayKey(s.start);
+      if (!groups.length || groups[groups.length - 1].k !== k) groups.push({ k, items: [] });
+      groups[groups.length - 1].items.push(s);
+    }
+    el.innerHTML = `
+      <div class="card row">
+        <b>学习记录</b><span class="muted small">共 ${list.length} 条</span>
+        <span class="spacer"></span>
+        <select class="input" style="width:auto" id="history-filter" aria-label="按科目筛选">
+          <option value="all">全部科目</option>
+          ${used.map((id) => { const s = getSubject(id); return `<option value="${esc(id)}" ${id === historyFilter ? 'selected' : ''}>${esc(s.emoji)} ${esc(s.name)}</option>`; }).join('')}
+        </select>
+      </div>
+      ${groups.length ? groups.map((g) => {
+        const mins = g.items.reduce((a, s) => a + s.activeMin, 0);
+        return `<div class="day-group">
+          <div class="day-head"><span>${dayLabel(g.k)}</span><small>${fmtMin(mins)} · ${g.items.length} 次 · 专注 ${weightedAvg(g.items, 'focus')} · 效果 ${weightedAvg(g.items, 'effect')}</small></div>
+          ${g.items.map(recordItem).join('')}
+        </div>`;
+      }).join('') : `<div class="card empty"><div class="big">🗒️</div>还没有学习记录</div>`}`;
+  }
+
+  function deleteSession(id) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s) return;
+    if (!confirm(`删除 ${dayLabel(dayKey(s.start))} ${fmtHM(s.start)} 的${getSubject(s.subject).name}记录？`)) return;
+    state.sessions = state.sessions.filter((x) => x.id !== id);
+    expanded.delete(id);
+    save();
+    renderCurrent();
+    toast('已删除');
+  }
+
+  // ---------------- 统计页 ----------------
+  function niceMax(v) {
+    const steps = [30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 720, 900];
+    for (const s of steps) if (s >= v) return s;
+    return Math.ceil(v / 120) * 120;
+  }
+
+  function barPath(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h);
+    return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+  }
+
+  function xLabel(k, n, i) {
+    const d = keyToDate(k);
+    if (n <= 7) return WEEK[d.getDay()];
+    return (n - 1 - i) % 5 === 0 ? `${d.getMonth() + 1}/${d.getDate()}` : '';
+  }
+
+  function minutesChart(days, W) {
+    const H = 220, L = 34, R = 8, T = 14, B = 24;
+    const iw = W - L - R, ih = H - T - B;
+    const goal = state.settings.goal;
+    const max = niceMax(Math.max(goal, ...days.map((d) => d.min)) * 1.05);
+    const band = iw / days.length;
+    const bw = Math.max(4, Math.min(34, band * 0.62));
+    const y = (v) => T + ih - (v / max) * ih;
+    let g = '<g class="grid axis">';
+    for (let i = 0; i <= 4; i++) {
+      const v = (max / 4) * i;
+      g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v)}</text>`;
+    }
+    g += '</g>';
+    let bars = '';
+    let labels = '<g class="axis">';
+    days.forEach((d, i) => {
+      const cx = L + band * i + band / 2;
+      if (d.min > 0) {
+        const h = Math.max(2, (d.min / max) * ih);
+        bars += `<path class="bar" d="${barPath(cx - bw / 2, T + ih - h, bw, h, 4)}"/>`;
+      }
+      const tip = `${dayLabel(d.k)}：${fmtMin(d.min)} · ${d.count} 次`;
+      bars += `<rect x="${L + band * i}" y="${T}" width="${band}" height="${ih}" fill="transparent" data-tip="${esc(tip)}" data-cx="${cx}"/>`;
+      labels += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${xLabel(d.k, days.length, i)}</text>`;
+    });
+    labels += '</g>';
+    const goalLine = goal <= max
+      ? `<line class="goal-line" x1="${L}" x2="${W - R}" y1="${y(goal)}" y2="${y(goal)}"/><text class="goal-text" x="${W - R}" y="${y(goal) - 5}" text-anchor="end">目标 ${goal} 分钟</text>`
+      : '';
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日学习时长（分钟）">${g}${goalLine}${bars}${labels}</svg><div class="tooltip"></div></div>`;
+  }
+
+  function scoreChart(days, W) {
+    const H = 220, L = 34, R = 28, T = 14, B = 24;
+    const iw = W - L - R, ih = H - T - B;
+    const band = iw / days.length;
+    const y = (v) => T + ih - (v / 100) * ih;
+    const x = (i) => L + band * i + band / 2;
+    let g = '<g class="grid axis">';
+    for (const v of [0, 25, 50, 75, 100]) {
+      g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+    }
+    g += '</g>';
+    const series = [['focus', 's1'], ['effect', 's2']];
+    const lasts = {};
+    let paths = '';
+    let dots = '';
+    let direct = '';
+    for (const [field, cls] of series) {
+      let dStr = '';
+      let prev = false;
+      let last = null;
+      days.forEach((d, i) => {
+        const v = d[field];
+        if (v == null) { prev = false; return; }
+        dStr += `${prev ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+        prev = true;
+        last = { i, v };
+        dots += `<circle class="dot ${cls}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="4"/>`;
+      });
+      if (dStr) paths += `<path class="line ${cls}" d="${dStr}"/>`;
+      lasts[field] = last;
+    }
+    // 只在最后一个点标注数值；较高的标在上方，较低的标在下方，避免重叠
+    for (const [field, other] of [['focus', 'effect'], ['effect', 'focus']]) {
+      const last = lasts[field];
+      if (!last) continue;
+      const o = lasts[other];
+      const above = !o || o.i !== last.i || last.v > o.v || (last.v === o.v && field === 'focus');
+      direct += `<text class="lbl" x="${x(last.i) + 8}" y="${y(last.v) + (above ? -6 : 14)}">${last.v}</text>`;
+    }
+    let hits = '<line class="hover-line" x1="0" x2="0" y1="' + T + '" y2="' + (T + ih) + '" visibility="hidden"/>';
+    let labels = '<g class="axis">';
+    days.forEach((d, i) => {
+      const tip = d.focus == null ? `${dayLabel(d.k)}：没有记录` : `${dayLabel(d.k)}：专注 ${d.focus} · 效果 ${d.effect}`;
+      hits += `<rect x="${L + band * i}" y="${T}" width="${band}" height="${ih}" fill="transparent" data-tip="${esc(tip)}" data-cx="${x(i)}"/>`;
+      labels += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${xLabel(d.k, days.length, i)}</text>`;
+    });
+    labels += '</g>';
+    return `<div class="legend"><span><i style="background:var(--series-1)"></i>专注度</span><span><i style="background:var(--series-2)"></i>学习效果</span></div>
+      <div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日平均专注度与学习效果">${g}${paths}${dots}${direct}${hits}${labels}</svg><div class="tooltip"></div></div>`;
+  }
+
+  function renderStats() {
+    const el = $('#tab-stats');
+    const keys = lastDays(statsRange);
+    const byDay = sessionsByDay();
+    const days = keys.map((k) => {
+      const list = byDay[k] || [];
+      return {
+        k,
+        list,
+        count: list.length,
+        min: Math.round(list.reduce((a, s) => a + s.activeMin, 0)),
+        focus: list.length ? weightedAvg(list, 'focus') : null,
+        effect: list.length ? weightedAvg(list, 'effect') : null,
+      };
+    });
+    const all = days.flatMap((d) => d.list);
+    const totalMin = all.reduce((a, s) => a + s.activeMin, 0);
+    const activeDays = days.filter((d) => d.count).length;
+
+    const bySubj = {};
+    for (const s of all) (bySubj[s.subject] = bySubj[s.subject] || []).push(s);
+    const subjRows = Object.entries(bySubj)
+      .map(([id, list]) => ({ id, list, min: list.reduce((a, s) => a + s.activeMin, 0), effect: weightedAvg(list, 'effect'), focus: weightedAvg(list, 'focus') }))
+      .sort((a, b) => b.min - a.min);
+    const maxSubj = subjRows.length ? subjRows[0].min : 1;
+
+    const insights = [];
+    const rated = subjRows.filter((r) => r.list.length >= 2);
+    if (rated.length >= 2) {
+      const best = rated.reduce((a, b) => (b.effect > a.effect ? b : a));
+      const worst = rated.reduce((a, b) => (b.effect < a.effect ? b : a));
+      if (best.id !== worst.id) {
+        insights.push(`🏆 学习效果最好的是 <b>${esc(getSubject(best.id).name)}</b>（${best.effect} 分）；<b>${esc(getSubject(worst.id).name)}</b> 相对薄弱（${worst.effect} 分），可以多做错题整理和复习。`);
+      }
+    }
+    const scored = days.filter((d) => d.focus != null);
+    if (scored.length >= 4) {
+      const half = Math.floor(scored.length / 2);
+      const avg = (arr) => arr.reduce((a, d) => a + d.focus, 0) / arr.length;
+      const diff = Math.round(avg(scored.slice(half)) - avg(scored.slice(0, half)));
+      if (diff >= 3) insights.push(`📈 最近专注度比前段时间提高了 ${diff} 分，继续保持！`);
+      else if (diff <= -3) insights.push(`📉 最近专注度下降了 ${-diff} 分，注意休息，学习时把手机放远一点。`);
+      else insights.push('➖ 专注度保持平稳。');
+    }
+    if (subjRows.length && subjRows[0].min / Math.max(totalMin, 1) > 0.6 && subjRows.length < 3) {
+      insights.push(`⚖️ 这段时间大部分时间都花在 ${esc(getSubject(subjRows[0].id).name)} 上，记得兼顾其他科目哦。`);
+    }
+
+    el.innerHTML = `
+      <div class="card row">
+        <b>学习统计</b><span class="spacer"></span>
+        <div class="seg" role="group" aria-label="统计范围">
+          <button class="${statsRange === 7 ? 'active' : ''}" data-act="range" data-v="7">近 7 天</button>
+          <button class="${statsRange === 30 ? 'active' : ''}" data-act="range" data-v="30">近 30 天</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="kpis" style="margin-top:0">
+          <div class="kpi"><div class="kpi-label">总学习时长</div><div class="kpi-value">${(totalMin / 60).toFixed(1)}<small>小时</small></div></div>
+          <div class="kpi"><div class="kpi-label">学习天数 / 次数</div><div class="kpi-value">${activeDays}<small>天</small> ${all.length}<small>次</small></div></div>
+          <div class="kpi"><div class="kpi-label">平均专注度</div><div class="kpi-value">${all.length ? weightedAvg(all, 'focus') : '–'}</div></div>
+          <div class="kpi"><div class="kpi-label">平均学习效果</div><div class="kpi-value">${all.length ? weightedAvg(all, 'effect') : '–'}</div></div>
+        </div>
+        ${insights.length ? insights.map((x) => `<div class="insight">${x}</div>`).join('') : ''}
+      </div>
+      ${all.length ? `
+      <div class="grid-2">
+        <div class="card"><h3 class="card-title">每日学习时长 <small>分钟</small></h3><div class="chart-slot" data-chart="minutes"></div></div>
+        <div class="card"><h3 class="card-title">专注度与学习效果 <small>每日平均分</small></h3><div class="chart-slot" data-chart="score"></div></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">各科学习时长 <small>右侧为平均学习效果</small></h3>
+        <div class="hbar-list">${subjRows.map((r) => {
+          const s = getSubject(r.id);
+          return `<div class="hbar"><span class="hbar-name">${esc(s.emoji)} ${esc(s.name)}</span>
+            <div class="hbar-track"><i style="width:${Math.max(2, (r.min / maxSubj) * 100)}%"></i></div>
+            <span class="hbar-val">${fmtMin(r.min)} · ${r.list.length}次 · 效果 ${r.effect}</span></div>`;
+        }).join('')}</div>
+        <details class="table-view"><summary>查看每日数据表</summary>
+          <table class="data"><thead><tr><th>日期</th><th>时长(分)</th><th>次数</th><th>专注度</th><th>学习效果</th></tr></thead>
+          <tbody>${days.slice().reverse().map((d) => `<tr><td>${dayLabel(d.k)}</td><td>${d.min}</td><td>${d.count}</td><td>${d.focus ?? '–'}</td><td>${d.effect ?? '–'}</td></tr>`).join('')}</tbody></table>
+        </details>
+      </div>` : `<div class="card empty"><div class="big">📊</div>这段时间还没有学习记录，学习后这里会显示图表</div>`}`;
+    // 按容器实际宽度绘制，保证文字大小不随缩放变化
+    $$('.chart-slot', el).forEach((slot) => {
+      const w = Math.max(280, Math.floor(slot.clientWidth));
+      slot.innerHTML = slot.dataset.chart === 'minutes' ? minutesChart(days, w) : scoreChart(days, w);
+    });
+  }
+
+  function onChartHover(e) {
+    if (!(e.target instanceof Element)) return;
+    const chart = e.target.closest('.chart');
+    if (!chart) return;
+    const tip = $('.tooltip', chart);
+    const line = $('.hover-line', chart);
+    const hit = e.target.closest('[data-tip]');
+    if (!hit || e.type === 'pointerleave') {
+      tip.classList.remove('show');
+      if (line) line.setAttribute('visibility', 'hidden');
+      return;
+    }
+    const r = chart.getBoundingClientRect();
+    tip.textContent = hit.dataset.tip;
+    const x = Math.min(Math.max(e.clientX - r.left, 70), r.width - 70);
+    tip.style.left = `${x}px`;
+    tip.style.top = `${e.clientY - r.top}px`;
+    tip.classList.add('show');
+    if (line) {
+      line.setAttribute('x1', hit.dataset.cx);
+      line.setAttribute('x2', hit.dataset.cx);
+      line.setAttribute('visibility', 'visible');
+    }
+  }
+
+  // ---------------- 设置页 ----------------
+  function renderSettings() {
+    const el = $('#tab-settings');
+    const st = state.settings;
+    el.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">基本设置</h3>
+        <div class="set-row"><label for="s-name">昵称</label><input class="input" id="s-name" maxlength="12" placeholder="同学" value="${esc(st.name)}"></div>
+        <div class="set-row"><label for="s-goal">每日学习目标（分钟）</label><input class="input" id="s-goal" type="number" min="10" max="900" step="10" value="${st.goal}"></div>
+        <div class="set-row"><label for="s-theme">外观</label>
+          <select class="input" id="s-theme">
+            <option value="auto" ${st.theme === 'auto' ? 'selected' : ''}>跟随系统</option>
+            <option value="light" ${st.theme === 'light' ? 'selected' : ''}>浅色</option>
+            <option value="dark" ${st.theme === 'dark' ? 'selected' : ''}>深色</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">科目管理 <small>勾选的科目会显示在学习页</small></h3>
+        <div class="toggle-grid">
+          ${allSubjects().map((s) => `
+            <label class="toggle-item">
+              <input type="checkbox" data-subj="${esc(s.id)}" ${st.hidden.includes(s.id) ? '' : 'checked'}>
+              <span>${esc(s.emoji)} ${esc(s.name)}</span>
+              ${s.id.startsWith('c_') ? `<button class="del" data-act="del-subj" data-id="${esc(s.id)}" title="删除科目" aria-label="删除 ${esc(s.name)}">✕</button>` : ''}
+            </label>`).join('')}
+        </div>
+        <div class="row" style="margin-top:12px">
+          <input class="input" id="new-emoji" style="width:64px;text-align:center" maxlength="2" value="📝" aria-label="科目图标">
+          <input class="input" id="new-subj" style="flex:1;min-width:140px" maxlength="8" placeholder="添加科目，如：奥数、编程">
+          <button class="btn btn-primary" data-act="add-subj">添加</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">数据管理 <small>数据只保存在本机浏览器中</small></h3>
+        <div class="row">
+          <button class="btn" data-act="export">⬇️ 导出备份</button>
+          <button class="btn" data-act="import">⬆️ 导入备份</button>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+          <span class="spacer"></span>
+          <button class="btn btn-danger" data-act="clear">清空全部记录</button>
+        </div>
+      </div>
+
+      <div class="card rules">
+        <h3 class="card-title">评分规则说明</h3>
+        <p>每次学习结束后，系统根据<b>有效学习时长</b>、<b>暂停/走神次数</b>和<b>学习量</b>自动计算两个分数（满分均为 100）。
+        「学习效率」= 学习量 ÷ 参考量，参考量 = 有效分钟数 × 该科目该学习方式的参考速度（例如数学做题约 0.35 题/分钟，英语做题约 0.8 题/分钟，阅读约 0.8 页/分钟），达到参考量的 90% 即得满分。</p>
+        <h4>专注度</h4>
+        <ul>
+          <li>有效时长占比（35 分）：有效学习时间 ÷ 总时间，≥95% 满分，≤50% 不得分</li>
+          <li>少走神/少中断（25 分）：每 30 分钟 0 次满分，每多 1 次扣约 6 分</li>
+          <li>学习效率（25 分）：见上方说明</li>
+          <li>自我评价（15 分）：结束时自评的专注程度</li>
+        </ul>
+        <h4>学习效果</h4>
+        <ul>
+          <li>学习量达成（30 分）：与学习效率相同的计算方式</li>
+          <li>正确率/掌握度（35 分）：做题类以正确率为主（≥95% 满分，≤40% 不得分），并参考自评掌握程度；其他学习方式按自评掌握程度</li>
+          <li>有效学习时长（15 分）：单次有效学习 40 分钟及以上满分，时间越短得分越低</li>
+          <li>专注度加成（20 分）：专注度 × 20%</li>
+        </ul>
+        <h4>等级</h4>
+        <ul><li>🌟 优秀 ≥ 90　👍 良好 ≥ 75　🙂 合格 ≥ 60　💪 加油 &lt; 60</li></ul>
+      </div>`;
+  }
+
+  function applyTheme() {
+    const t = state.settings.theme;
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    else delete document.documentElement.dataset.theme;
+  }
+
+  function addSubject() {
+    const name = $('#new-subj').value.trim();
+    const emoji = $('#new-emoji').value.trim() || '📝';
+    if (!name) return toast('请输入科目名称');
+    if (allSubjects().some((s) => s.name === name)) return toast('这个科目已经有了');
+    const palette = ['#1c7ed6', '#e8590c', '#0ca678', '#7048e8', '#d6336c', '#f08c00', '#1098ad', '#5c940d'];
+    state.settings.custom.push({
+      id: `c_${Date.now().toString(36)}`, name, emoji, color: palette[state.settings.custom.length % palette.length], quiz: 0.5,
+    });
+    save();
+    renderSettings();
+    toast(`已添加科目：${name}`);
+  }
+
+  function deleteSubject(id) {
+    const s = getSubject(id);
+    const used = state.sessions.some((x) => x.subject === id) || (state.running && state.running.subject === id);
+    if (!confirm(`删除科目「${s.name}」？${used ? '\n已有的学习记录会保留，但会显示为「已删除科目」。' : ''}`)) return;
+    state.settings.custom = state.settings.custom.filter((x) => x.id !== id);
+    state.settings.hidden = state.settings.hidden.filter((x) => x !== id);
+    if (state.last.subject === id) state.last.subject = 'math';
+    save();
+    renderSettings();
+  }
+
+  function exportData() {
+    const data = JSON.stringify({ app: 'gavin-study', exportedAt: new Date().toISOString(), sessions: state.sessions, settings: state.settings }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `学习记录备份-${dayKey(Date.now())}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  function validSession(s) {
+    return s && typeof s.id === 'string' && typeof s.subject === 'string' && Number.isFinite(s.start) && Number.isFinite(s.end) &&
+      Number.isFinite(s.activeMin) && Number.isFinite(s.focus) && Number.isFinite(s.effect);
+  }
+
+  function importData(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const list = (data.sessions || []).filter(validSession);
+        const have = new Set(state.sessions.map((s) => s.id));
+        const add = list.filter((s) => !have.has(s.id));
+        state.sessions = state.sessions.concat(add);
+        if (data.settings && Array.isArray(data.settings.custom)) {
+          const ids = new Set(state.settings.custom.map((c) => c.id));
+          for (const c of data.settings.custom) {
+            if (c && typeof c.id === 'string' && typeof c.name === 'string' && !ids.has(c.id)) state.settings.custom.push(c);
+          }
+        }
+        save();
+        renderCurrent();
+        toast(`导入完成：新增 ${add.length} 条记录`);
+      } catch (e) {
+        toast('导入失败：文件格式不正确');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function clearAll() {
+    if (!confirm('确定清空全部学习记录吗？此操作无法撤销，建议先导出备份。')) return;
+    state.sessions = [];
+    save();
+    renderCurrent();
+    toast('已清空');
+  }
+
+  // ---------------- 弹窗 / 提示 ----------------
+  function openModal(html) {
+    const m = $('#modal');
+    $('.modal-sheet', m).innerHTML = html;
+    m.hidden = false;
+    document.body.style.overflow = 'hidden';
+  }
+  function closeModal() {
+    $('#modal').hidden = true;
+    document.body.style.overflow = '';
+  }
+  let toastTimer = null;
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // ---------------- 页面切换 ----------------
+  function renderCurrent() {
+    if (currentTab === 'study') renderStudy();
+    else if (currentTab === 'history') renderHistory();
+    else if (currentTab === 'stats') renderStats();
+    else renderSettings();
+  }
+  function switchTab(tab) {
+    currentTab = tab;
+    $$('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+    $$('.panel').forEach((p) => p.classList.toggle('active', p.id === `tab-${tab}`));
+    renderCurrent();
+    window.scrollTo(0, 0);
+  }
+
+  // ---------------- 事件 ----------------
+  document.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('.tab');
+    if (tabBtn) return switchTab(tabBtn.dataset.tab);
+    if (e.target.classList.contains('modal-backdrop')) {
+      // 填写结束表单时不允许点背景关闭，避免误操作丢失
+      if (!state.running || !state.running.end) closeModal();
+      return;
+    }
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    const id = btn.dataset.id;
+    switch (act) {
+      case 'subject': state.last.subject = id; save(); renderStudy(); break;
+      case 'type': state.last.type = id; save(); renderStudy(); break;
+      case 'start': startStudy(); break;
+      case 'pause': togglePause(); break;
+      case 'end': endStudy(); break;
+      case 'discard': discardStudy(); break;
+      case 'back': resumeFromForm(); break;
+      case 'rate': readFormInputs(); form[btn.dataset.field] = Number(btn.dataset.v); renderFinishForm(); break;
+      case 'step': {
+        readFormInputs();
+        form.interruptions = Math.max(0, Math.min(99, form.interruptions + Number(btn.dataset.d)));
+        $('#f-int').textContent = form.interruptions;
+        break;
+      }
+      case 'close': closeModal(); break;
+      case 'toggle': expanded.has(id) ? expanded.delete(id) : expanded.add(id); renderCurrent(); break;
+      case 'detail': { const s = state.sessions.find((x) => x.id === id); if (s) showResult(s, false); break; }
+      case 'delete': deleteSession(id); break;
+      case 'range': statsRange = Number(btn.dataset.v); renderStats(); break;
+      case 'add-subj': e.preventDefault(); addSubject(); break;
+      case 'del-subj': e.preventDefault(); deleteSubject(id); break;
+      case 'export': exportData(); break;
+      case 'import': $('#import-file').click(); break;
+      case 'clear': clearAll(); break;
+      default: break;
+    }
+  });
+
+  document.addEventListener('submit', (e) => {
+    if (e.target.id === 'finish-form') {
+      e.preventDefault();
+      submitFinish();
+    }
+  });
+
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.id === 'history-filter') { historyFilter = t.value; renderHistory(); return; }
+    if (t.id === 'import-file' && t.files[0]) { importData(t.files[0]); t.value = ''; return; }
+    if (t.id === 's-name') { state.settings.name = t.value.trim(); save(); toast('昵称已保存'); return; }
+    if (t.id === 's-goal') {
+      const v = Math.round(Number(t.value));
+      if (Number.isFinite(v) && v >= 10 && v <= 900) { state.settings.goal = v; save(); toast('每日目标已保存'); }
+      else { t.value = state.settings.goal; toast('目标需在 10–900 分钟之间'); }
+      return;
+    }
+    if (t.id === 's-theme') { state.settings.theme = t.value; save(); applyTheme(); return; }
+    if (t.dataset.subj) {
+      const sid = t.dataset.subj;
+      const hidden = state.settings.hidden.filter((x) => x !== sid);
+      if (!t.checked) hidden.push(sid);
+      state.settings.hidden = hidden;
+      save();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.id === 'new-subj') addSubject();
+    if (e.key === 'Escape' && !$('#modal').hidden && !(state.running && state.running.end)) closeModal();
+  });
+
+  document.addEventListener('pointermove', onChartHover);
+  document.addEventListener('pointerleave', onChartHover, true);
+  document.addEventListener('visibilitychange', updateClock);
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (currentTab === 'stats') renderStats(); }, 200);
+  });
+
+  // 其他标签页修改数据时同步
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY) return;
+    state = load();
+    applyTheme();
+    renderCurrent();
+  });
+
+  // ---------------- 启动 ----------------
+  applyTheme();
+  renderStudy();
+  if (state.running && state.running.end) openFinishForm();
+  setInterval(updateClock, 250);
+})();
