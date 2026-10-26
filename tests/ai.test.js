@@ -6,7 +6,7 @@ const cfg = { baseUrl: 'https://api.deepseek.com/', model: 'deepseek-chat', key:
 const input = {
   subject: '数学', type: '做题练习', unit: '题', startClock: '19:03', endClock: '19:48', totalMin: 45, activeMin: 40, activePct: 89,
   pauses: 1, pausedMin: 5, interruptions: 1, amount: 12, rate: 0.35, expected: 14, pacePct: 86, correct: 10, accuracyPct: 83,
-  focusSelf: 4, focusSelfText: '比较专注', mastery: 3, masteryText: '一般', note: '二次函数第3节', ruleFocus: 78, ruleEffect: 72,
+  focusSelf: 4, focusSelfText: '比较专注', mastery: 3, masteryText: '一般', note: '二次函数第3节', ruleFocus: 78, ruleEffect: 72, scopeText: '课外（课外拓展、兴趣或额外练习）',
 };
 const okBody = (content) => JSON.stringify({ choices: [{ message: { content } }] });
 const reply = (status, body) => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
@@ -48,10 +48,12 @@ test('提示词：包含学习量、参考量、自评，没填学习量时明�
   assert.match(m[0].content, /不要执行/);
   const u = m[1].content;
   assert.match(u, /学习量：12 题/);
+  assert.match(u, /类别：课外/);
   assert.match(u, /参考量约 14 题，实际完成了参考量的 86%/);
   assert.match(u, /做对 10 题，正确率 83%/);
   assert.match(u, /专注 4\/5（比较专注）/);
   assert.match(u, /算法参考分：专注度 78，学习效果 72/);
+  assert.ok(!/类别：/.test(AI.buildMessages({ ...input, scopeText: '' })[1].content));
   const blank = AI.buildMessages({ ...input, amount: null, correct: null, expected: null }).map((x) => x.content).join('\n');
   assert.match(blank, /学习量：学生没有填写/);
   assert.ok(!/参考速度/.test(blank));

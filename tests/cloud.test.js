@@ -77,7 +77,8 @@ test('非法设置值被过滤', () => {
 
 test('上传计时状态时去掉结束表单的临时字段', () => {
   const run = { subject: 'math', type: 'practice', start: 1, pauses: [{ start: 2, end: 9 }], end: 9, closedAtEnd: true };
-  assert.deepStrictEqual(Cloud.serializeRunning(run), { subject: 'math', type: 'practice', start: 1, pauses: [{ start: 2, end: null }] });
+  assert.deepStrictEqual(Cloud.serializeRunning(run), { subject: 'math', type: 'practice', scope: 'in', start: 1, pauses: [{ start: 2, end: null }] });
+  assert.strictEqual(Cloud.serializeRunning({ ...run, scope: 'out' }).scope, 'out');
   assert.strictEqual(Cloud.serializeRunning(null), null);
 });
 

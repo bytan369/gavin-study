@@ -34,7 +34,7 @@
     if (!validRunning(run)) return null;
     const pauses = run.pauses.map((p) => ({ start: p.start, end: p.end || null }));
     if (run.closedAtEnd && pauses.length) pauses[pauses.length - 1].end = null;
-    return { subject: run.subject, type: run.type, start: run.start, pauses };
+    return { subject: run.subject, type: run.type, scope: run.scope === 'out' ? 'out' : 'in', start: run.start, pauses };
   }
 
   function sanitizeSettings(remote, local) {

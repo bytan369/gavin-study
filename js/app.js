@@ -21,6 +21,7 @@
   let currentTab = 'study';
   let statsRange = 7;
   let historyFilter = 'all';
+  let historyScope = 'all';
   const expanded = new Set();
   let form = null;
   let cap = { listening: false, busy: false, interim: '', progress: '', msg: '', tone: '' };
@@ -200,6 +201,21 @@
   }
 
   // 学习量没填（null）时不显示数量；兼容旧记录
+  // 课内 / 课外：旧记录没有这个标记，统计里单独显示为“未标记”，可以在记录详情里改
+  const scopeOf = (s) => (s && (s.scope === 'in' || s.scope === 'out') ? s.scope : null);
+  const scopeName = (v) => (v === 'in' ? '课内' : v === 'out' ? '课外' : '未标记');
+  const scopeChip = (v) => `<span class="scope-chip ${v || 'none'}">${scopeName(v)}</span>`;
+  function splitStats(list) {
+    const out = { in: [], out: [], none: [] };
+    for (const s of list) out[scopeOf(s) || 'none'].push(s);
+    const sum = (a) => a.reduce((t, x) => t + (+x.activeMin || 0), 0);
+    return {
+      lists: out,
+      min: { in: sum(out.in), out: sum(out.out), none: sum(out.none) },
+      total: sum(list),
+    };
+  }
+
   const hasAmount = (s) => s.amount !== null && s.amount !== undefined;
   const amountSuffix = (s, unit) => (hasAmount(s) ? ` · ${s.amount} ${esc(unit)}` : '');
 
@@ -220,17 +236,18 @@
     return !!p && !p.end;
   }
 
-  function startStudy() {
+  function startStudy(scope) {
     state.running = {
       subject: state.last.subject,
       type: state.last.type,
+      scope: scope === 'out' ? 'out' : 'in',
       start: Date.now(),
       pauses: [],
     };
     markRunning();
     save();
     renderStudy();
-    toast(`开始学习 ${fmtHMS(state.running.start)}，加油！`);
+    toast(`${scopeName(state.running.scope)}开始学习 ${fmtHMS(state.running.start)}，加油！`);
   }
 
   function togglePause() {
@@ -303,6 +320,13 @@
     updateClock();
   }
 
+  // “课内 X · 课外 Y”一行小字
+  function scopeLine(list) {
+    const sp = splitStats(list);
+    const parts = [['in', '课内'], ['out', '课外'], ['none', '未标记']].filter(([k]) => sp.lists[k].length).map(([k, n]) => `<span class="scope-dot ${k}"></span>${n} ${fmtMin(sp.min[k])}（${sp.lists[k].length} 次）`);
+    return `<div class="scope-line small">${parts.join('<span class="sep">·</span>')}</div>`;
+  }
+
   function idleView() {
     const today = (sessionsByDay()[dayKey(Date.now())] || []).sort((a, b) => b.start - a.start);
     const mins = today.reduce((a, s) => a + s.activeMin, 0);
@@ -350,7 +374,10 @@
         <b>${esc(subjObj.emoji)} ${esc(subjObj.name)}</b>
         <span>${type.icon} ${type.name}</span>
       </div>
-      <button class="btn btn-primary btn-lg" data-act="start">▶ 开始学习</button>
+      <div class="start-btns">
+        <button class="btn btn-primary btn-lg" data-act="start" data-scope="in">▶ 课内开始</button>
+        <button class="btn btn-out btn-lg" data-act="start" data-scope="out">▶ 课外开始</button>
+      </div>
     </div>
 
     ${Cloud.isConfigured() && !Cloud.getUser() && Cloud.getStatus().kind === 'out' ? `
@@ -364,6 +391,7 @@
         <div class="kpi"><div class="kpi-label">专注度</div><div class="kpi-value">${today.length ? weightedAvg(today, 'focus') : '–'}</div></div>
         <div class="kpi"><div class="kpi-label">学习效果</div><div class="kpi-value">${today.length ? weightedAvg(today, 'effect') : '–'}</div></div>
       </div>
+      ${today.length ? scopeLine(today) : ''}
       ${today.length ? today.map(recordItem).join('') : `<div class="empty"><div class="big">🌱</div>今天还没有学习记录，开始第一段学习吧！</div>`}
     </div>`;
   }
@@ -376,7 +404,7 @@
     const tm = runTimes(run);
     return `
     <div class="card timer-card" style="--c:${esc(s.color)}">
-      <div class="timer-subject">${esc(s.emoji)} ${esc(s.name)} <span class="type">· ${t.icon} ${t.name}</span></div>
+      <div class="timer-subject">${esc(s.emoji)} ${esc(s.name)} ${scopeChip(form ? form.scope : run.scope || 'in')} <span class="type">· ${t.icon} ${t.name}</span></div>
       <div class="timer-status off"><span class="dot"></span>学习已结束，还没保存</div>
       <div class="timer-meta" style="margin-top:12px">${fmtHMS(run.start)} → ${fmtHMS(run.end)} · 有效学习 ${fmtMin(tm.activeMs / 60000)}</div>
       <div class="timer-actions">
@@ -394,7 +422,7 @@
     const paused = isPaused(run);
     return `
     <div class="card timer-card" style="--c:${esc(s.color)}">
-      <div class="timer-subject">${esc(s.emoji)} ${esc(s.name)} <span class="type">· ${t.icon} ${t.name}</span></div>
+      <div class="timer-subject">${esc(s.emoji)} ${esc(s.name)} ${scopeChip(run.scope || 'in')} <span class="type">· ${t.icon} ${t.name}</span></div>
       <div class="timer-status ${paused ? 'off' : 'on'}"><span class="dot"></span>${paused ? '已暂停' : '专注学习中'}</div>
       <div class="timer-clock" id="clock">00:00:00</div>
       <div class="timer-meta" id="timer-meta"></div>
@@ -416,7 +444,7 @@
     if (!run || !run.end) return;
     if (!form) {
       form = {
-        amount: '', correct: '', interruptions: run.pauses.length, focusSelf: 4, mastery: 3, note: '', error: '',
+        amount: '', correct: '', interruptions: run.pauses.length, focusSelf: 4, mastery: 3, note: '', error: '', scope: run.scope === 'out' ? 'out' : 'in',
         voiceLang: Capture.voiceLangFor(run.subject),
       };
       cap = { listening: false, busy: false, interim: '', progress: '', msg: '', tone: '' };
@@ -448,6 +476,13 @@
         ${short ? '<div class="err">本次有效学习不足 1 分钟，评分参考意义不大</div>' : ''}
       </div>
       <form id="finish-form" novalidate>
+        <div class="field">
+          <div class="label">学习类别</div>
+          <div class="seg scope-seg" role="group" aria-label="学习类别">
+            <button type="button" class="${form.scope === 'in' ? 'active' : ''}" data-act="form-scope" data-v="in">课内</button>
+            <button type="button" class="${form.scope === 'out' ? 'active' : ''}" data-act="form-scope" data-v="out">课外</button>
+          </div>
+        </div>
         <div class="field">
           <label for="f-amount">学习量 <span class="muted small">（选填）</span></label>
           <div class="input-unit"><input class="input" id="f-amount" name="amount" type="number" inputmode="numeric" min="0" step="1" placeholder="不填也可以" value="${esc(form.amount)}"><span>${esc(unit)}</span></div>
@@ -629,6 +664,7 @@
       id: `s${run.start}${Math.random().toString(36).slice(2, 6)}`,
       subject: run.subject,
       type: run.type,
+      scope: form.scope === 'out' ? 'out' : 'in',
       start: run.start,
       end: run.end,
       pauses: run.pauses.length,
@@ -697,6 +733,7 @@
     return {
       subject: subj.name,
       type: t.name,
+      scopeText: scopeOf(s) === 'in' ? '课内（学校课程的内容）' : scopeOf(s) === 'out' ? '课外（课外拓展、兴趣或额外练习）' : '',
       unit: SC.unitOf(t, subj),
       startClock: fmtHM(s.start),
       endClock: fmtHM(s.end),
@@ -827,7 +864,7 @@
       <button class="rec-main" data-act="toggle" data-id="${esc(s.id)}" aria-expanded="${open}">
         <div class="rec-icon" style="--c:${esc(subj.color)}">${esc(subj.emoji)}</div>
         <div class="rec-body">
-          <div class="rec-title">${esc(subj.name)}<span class="type">${t.icon} ${t.name}</span></div>
+          <div class="rec-title">${esc(subj.name)} ${scopeChip(scopeOf(s))}<span class="type">${t.icon} ${t.name}</span></div>
           <div class="rec-sub">${fmtHM(s.start)}–${fmtHM(s.end)} · ${fmtMin(s.activeMin)}${amountSuffix(s, unit)}</div>
         </div>
         <div class="rec-scores">${badge(s.focus, '专注')}${badge(s.effect, '效果')}</div>
@@ -845,6 +882,13 @@
           <span>📘 掌握程度 ${s.mastery}/5</span>
         </div>
         ${s.note ? `<div class="note">${esc(s.note)}</div>` : ''}
+        <div class="row" style="margin-bottom:8px">
+          <span class="small muted">类别</span>
+          <div class="seg">
+            <button class="${scopeOf(s) === 'in' ? 'active' : ''}" data-act="set-scope" data-id="${esc(s.id)}" data-v="in">课内</button>
+            <button class="${scopeOf(s) === 'out' ? 'active' : ''}" data-act="set-scope" data-id="${esc(s.id)}" data-v="out">课外</button>
+          </div>
+        </div>
         <div class="row">
           <button class="btn small" data-act="detail" data-id="${esc(s.id)}">📊 评分详情</button>
           <span class="spacer"></span>
@@ -860,6 +904,7 @@
     if (historyFilter !== 'all' && !used.includes(historyFilter)) historyFilter = 'all';
     const list = state.sessions
       .filter((s) => historyFilter === 'all' || s.subject === historyFilter)
+      .filter((s) => historyScope === 'all' || (scopeOf(s) || 'none') === historyScope)
       .sort((a, b) => b.start - a.start);
     const groups = [];
     for (const s of list) {
@@ -871,6 +916,12 @@
       <div class="card row">
         <b>学习记录</b><span class="muted small">共 ${list.length} 条</span>
         <span class="spacer"></span>
+        <select class="input" style="width:auto" id="history-scope" aria-label="按课内课外筛选">
+          <option value="all" ${historyScope === 'all' ? 'selected' : ''}>课内+课外</option>
+          <option value="in" ${historyScope === 'in' ? 'selected' : ''}>只看课内</option>
+          <option value="out" ${historyScope === 'out' ? 'selected' : ''}>只看课外</option>
+          ${state.sessions.some((x) => !scopeOf(x)) ? `<option value="none" ${historyScope === 'none' ? 'selected' : ''}>未标记</option>` : ''}
+        </select>
         <select class="input" style="width:auto" id="history-filter" aria-label="按科目筛选">
           <option value="all">全部科目</option>
           ${used.map((id) => { const s = getSubject(id); return `<option value="${esc(id)}" ${id === historyFilter ? 'selected' : ''}>${esc(s.emoji)} ${esc(s.name)}</option>`; }).join('')}
@@ -883,6 +934,16 @@
           ${g.items.map(recordItem).join('')}
         </div>`;
       }).join('') : `<div class="card empty"><div class="big">🗒️</div>还没有学习记录</div>`}`;
+  }
+
+  function setScope(id, v) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s || (v !== 'in' && v !== 'out') || scopeOf(s) === v) return;
+    s.scope = v;
+    markSession(id);
+    save();
+    renderCurrent();
+    toast(`已改为${scopeName(v)}`);
   }
 
   function deleteSession(id) {
@@ -933,11 +994,21 @@
     let labels = '<g class="axis">';
     days.forEach((d, i) => {
       const cx = L + band * i + band / 2;
-      if (d.min > 0) {
-        const h = Math.max(2, (d.min / max) * ih);
-        bars += `<path class="bar" d="${barPath(cx - bw / 2, T + ih - h, bw, h, 4)}"/>`;
-      }
-      const tip = `${dayLabel(d.k)}：${fmtMin(d.min)} · ${d.count} 次`;
+      // 课内在下、课外在上、未标记在最上；段与段之间留 2px 空隙，最上面一段是圆角
+      const segs = ['in', 'out', 'none'].filter((k) => d[k] > 0);
+      let base = T + ih;
+      segs.forEach((k, j) => {
+        const h = Math.max(2, (d[k] / max) * ih);
+        const top = j === segs.length - 1;
+        const x = cx - bw / 2;
+        const yy = base - h;
+        bars += top
+          ? `<path class="bar seg-${k}" d="${barPath(x, yy, bw, h, 4)}"/>`
+          : `<rect class="bar seg-${k}" x="${x}" y="${yy + 1}" width="${bw}" height="${Math.max(1, h - 1)}"/>`;
+        base = yy;
+      });
+      const parts = [['in', '课内'], ['out', '课外'], ['none', '未标记']].filter(([k]) => d[k] > 0).map(([k, n]) => `${n} ${fmtMin(d[k])}`);
+      const tip = d.count ? `${dayLabel(d.k)}：${parts.join(' · ')} · 共 ${fmtMin(d.min)} · ${d.count} 次` : `${dayLabel(d.k)}：没有记录`;
       bars += `<rect x="${L + band * i}" y="${T}" width="${band}" height="${ih}" fill="transparent" data-tip="${esc(tip)}" data-cx="${cx}"/>`;
       labels += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${xLabel(d.k, days.length, i)}</text>`;
     });
@@ -945,7 +1016,9 @@
     const goalLine = goal <= max
       ? `<line class="goal-line" x1="${L}" x2="${W - R}" y1="${y(goal)}" y2="${y(goal)}"/><text class="goal-text" x="${W - R}" y="${y(goal) - 5}" text-anchor="end">目标 ${goal} 分钟</text>`
       : '';
-    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日学习时长（分钟）">${g}${goalLine}${bars}${labels}</svg><div class="tooltip"></div></div>`;
+    const hasNone = days.some((d) => d.none > 0);
+    return `<div class="legend"><span><i class="sw seg-in"></i>课内</span><span><i class="sw seg-out"></i>课外</span>${hasNone ? '<span><i class="sw seg-none"></i>未标记</span>' : ''}</div>
+      <div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日学习时长（分钟），按课内课外分色">${g}${goalLine}${bars}${labels}</svg><div class="tooltip"></div></div>`;
   }
 
   function scoreChart(days, W) {
@@ -999,17 +1072,59 @@
       <div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日平均专注度与学习效果">${g}${paths}${dots}${direct}${hits}${labels}</svg><div class="tooltip"></div></div>`;
   }
 
+  // 课内 / 课外对比：占比条 + 两张小卡片（时间、次数、平均专注和效果）
+  function scopeSplitCard(list, title, hint) {
+    if (!list.length) return '';
+    const sp = splitStats(list);
+    const keys = ['in', 'out'].concat(sp.lists.none.length ? ['none'] : []);
+    const pct = (k) => (sp.total ? Math.round((sp.min[k] / sp.total) * 100) : 0);
+    return `<div class="card">
+      <h3 class="card-title">${title} <small>${hint}</small></h3>
+      <div class="split-bar" role="img" aria-label="课内课外时间占比">${keys.filter((k) => sp.min[k] > 0).map((k) => `<i class="seg-${k}" style="flex:${sp.min[k]}"></i>`).join('')}</div>
+      <div class="scope-tiles">${keys.map((k) => {
+        const l = sp.lists[k];
+        return `<div class="scope-tile">
+          <div class="scope-tile-name"><span class="scope-dot ${k}"></span>${scopeName(k)}</div>
+          <div class="scope-tile-val">${fmtMin(sp.min[k])}</div>
+          <div class="scope-tile-sub">占 ${pct(k)}% · ${l.length} 次</div>
+          <div class="scope-tile-sub">专注 ${l.length ? weightedAvg(l, 'focus') : '–'} · 效果 ${l.length ? weightedAvg(l, 'effect') : '–'}</div>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }
+
+  // 全部记录的累计统计
+  function overviewCards() {
+    const all = state.sessions;
+    if (!all.length) return '';
+    const days = new Set(all.map((x) => dayKey(x.start))).size;
+    const total = all.reduce((a, x) => a + (+x.activeMin || 0), 0);
+    return `<div class="card">
+      <h3 class="card-title">累计总览 <small>全部记录</small></h3>
+      <div class="kpis" style="margin-top:0">
+        <div class="kpi"><div class="kpi-label">总学习时长</div><div class="kpi-value">${(total / 60).toFixed(1)}<small>小时</small></div></div>
+        <div class="kpi"><div class="kpi-label">学习天数</div><div class="kpi-value">${days}<small>天</small></div></div>
+        <div class="kpi"><div class="kpi-label">学习次数</div><div class="kpi-value">${all.length}<small>次</small></div></div>
+        <div class="kpi"><div class="kpi-label">平均专注 / 效果</div><div class="kpi-value">${weightedAvg(all, 'focus')}<small>/</small>${weightedAvg(all, 'effect')}</div></div>
+      </div>
+    </div>${scopeSplitCard(all, '课内 / 课外', '累计')}`;
+  }
+
   function renderStats() {
     const el = $('#tab-stats');
     const keys = lastDays(statsRange);
     const byDay = sessionsByDay();
     const days = keys.map((k) => {
       const list = byDay[k] || [];
+      const sp = splitStats(list);
       return {
         k,
         list,
         count: list.length,
-        min: Math.round(list.reduce((a, s) => a + s.activeMin, 0)),
+        in: Math.round(sp.min.in),
+        out: Math.round(sp.min.out),
+        none: Math.round(sp.min.none),
+        min: Math.round(sp.total),
         focus: list.length ? weightedAvg(list, 'focus') : null,
         effect: list.length ? weightedAvg(list, 'effect') : null,
       };
@@ -1021,7 +1136,7 @@
     const bySubj = {};
     for (const s of all) (bySubj[s.subject] = bySubj[s.subject] || []).push(s);
     const subjRows = Object.entries(bySubj)
-      .map(([id, list]) => ({ id, list, min: list.reduce((a, s) => a + s.activeMin, 0), effect: weightedAvg(list, 'effect'), focus: weightedAvg(list, 'focus') }))
+      .map(([id, list]) => ({ id, list, sp: splitStats(list), min: list.reduce((a, s) => a + s.activeMin, 0), effect: weightedAvg(list, 'effect'), focus: weightedAvg(list, 'focus') }))
       .sort((a, b) => b.min - a.min);
     const maxSubj = subjRows.length ? subjRows[0].min : 1;
 
@@ -1046,10 +1161,17 @@
     if (subjRows.length && subjRows[0].min / Math.max(totalMin, 1) > 0.6 && subjRows.length < 3) {
       insights.push(`⚖️ 这段时间大部分时间都花在 ${esc(getSubject(subjRows[0].id).name)} 上，记得兼顾其他科目哦。`);
     }
+    const rangeSp = splitStats(all);
+    if (all.length >= 3 && rangeSp.total > 0 && rangeSp.min.out / rangeSp.total < 0.1 && rangeSp.min.in > 0) {
+      insights.push('📚 这段时间几乎都是课内学习，有余力的话可以安排一点课外拓展。');
+    }
 
+    const hasNone = subjRows.some((r) => r.sp.min.none > 0);
+    const segW = (r, k) => (r.sp.min[k] > 0 ? Math.max(1, (r.sp.min[k] / maxSubj) * 100) : 0);
     el.innerHTML = `
+      ${overviewCards()}
       <div class="card row">
-        <b>学习统计</b><span class="spacer"></span>
+        <b>阶段统计</b><span class="spacer"></span>
         <div class="seg" role="group" aria-label="统计范围">
           <button class="${statsRange === 7 ? 'active' : ''}" data-act="range" data-v="7">近 7 天</button>
           <button class="${statsRange === 30 ? 'active' : ''}" data-act="range" data-v="30">近 30 天</button>
@@ -1064,22 +1186,27 @@
         </div>
         ${insights.length ? insights.map((x) => `<div class="insight">${x}</div>`).join('') : ''}
       </div>
+      ${scopeSplitCard(all, `近 ${statsRange} 天 课内 / 课外`, '阶段')}
       ${all.length ? `
       <div class="grid-2">
         <div class="card"><h3 class="card-title">每日学习时长 <small>分钟</small></h3><div class="chart-slot" data-chart="minutes"></div></div>
         <div class="card"><h3 class="card-title">专注度与学习效果 <small>每日平均分</small></h3><div class="chart-slot" data-chart="score"></div></div>
       </div>
       <div class="card">
-        <h3 class="card-title">各科学习时长 <small>右侧为平均学习效果</small></h3>
+        <h3 class="card-title">各科学习时长 <small>课内 / 课外</small></h3>
+        <div class="legend"><span><i class="sw seg-in"></i>课内</span><span><i class="sw seg-out"></i>课外</span>${hasNone ? '<span><i class="sw seg-none"></i>未标记</span>' : ''}</div>
         <div class="hbar-list">${subjRows.map((r) => {
           const s = getSubject(r.id);
-          return `<div class="hbar"><span class="hbar-name">${esc(s.emoji)} ${esc(s.name)}</span>
-            <div class="hbar-track"><i style="width:${Math.max(2, (r.min / maxSubj) * 100)}%"></i></div>
-            <span class="hbar-val">${fmtMin(r.min)} · ${r.list.length}次 · 效果 ${r.effect}</span></div>`;
+          const split = [['in', '课内'], ['out', '课外'], ['none', '未标记']].filter(([k]) => r.sp.min[k] > 0).map(([k, n]) => `${n} ${fmtMin(r.sp.min[k])}`).join(' · ');
+          return `<div class="hbar">
+            <div class="hbar-top"><span class="hbar-name">${esc(s.emoji)} ${esc(s.name)}</span><span class="hbar-val">${fmtMin(r.min)} · ${r.list.length}次 · 效果 ${r.effect}</span></div>
+            <div class="hbar-track">${['in', 'out', 'none'].map((k) => (segW(r, k) ? `<i class="seg-${k}" style="width:${segW(r, k)}%"></i>` : '')).join('')}</div>
+            <div class="hbar-split">${split}</div>
+          </div>`;
         }).join('')}</div>
         <details class="table-view"><summary>查看每日数据表</summary>
-          <table class="data"><thead><tr><th>日期</th><th>时长(分)</th><th>次数</th><th>专注度</th><th>学习效果</th></tr></thead>
-          <tbody>${days.slice().reverse().map((d) => `<tr><td>${dayLabel(d.k)}</td><td>${d.min}</td><td>${d.count}</td><td>${d.focus ?? '–'}</td><td>${d.effect ?? '–'}</td></tr>`).join('')}</tbody></table>
+          <table class="data"><thead><tr><th>日期</th><th>课内(分)</th><th>课外(分)</th><th>合计</th><th>次数</th><th>专注</th><th>效果</th></tr></thead>
+          <tbody>${days.slice().reverse().map((d) => `<tr><td>${dayLabel(d.k)}</td><td>${d.in}</td><td>${d.out}</td><td>${d.min}</td><td>${d.count}</td><td>${d.focus ?? '–'}</td><td>${d.effect ?? '–'}</td></tr>`).join('')}</tbody></table>
         </details>
       </div>` : `<div class="card empty"><div class="big">📊</div>这段时间还没有学习记录，学习后这里会显示图表</div>`}`;
     // 按容器实际宽度绘制，保证文字大小不随缩放变化
@@ -1680,7 +1807,9 @@
     switch (act) {
       case 'subject': state.last.subject = id; save(); renderStudy(); break;
       case 'type': state.last.type = id; save(); renderStudy(); break;
-      case 'start': startStudy(); break;
+      case 'start': startStudy(btn.dataset.scope); break;
+      case 'form-scope': readFormInputs(); form.scope = btn.dataset.v === 'out' ? 'out' : 'in'; renderFinishForm(); break;
+      case 'set-scope': setScope(id, btn.dataset.v); break;
       case 'pause': togglePause(); break;
       case 'end': endStudy(); break;
       case 'discard': discardStudy(); break;
@@ -1738,6 +1867,7 @@
     const t = e.target;
     if (t.id === 'photo-input') { const f = t.files[0]; t.value = ''; recognizePhoto(f); return; }
     if (t.id === 'voice-lang') { form.voiceLang = t.value; if (cap.listening) Capture.voice.stop(); return; }
+    if (t.id === 'history-scope') { historyScope = t.value; renderHistory(); return; }
     if (t.id === 'history-filter') { historyFilter = t.value; renderHistory(); return; }
     if (t.id === 'import-file' && t.files[0]) { importData(t.files[0]); t.value = ''; return; }
     if (t.id === 's-name') { state.settings.name = t.value.trim(); markSettings(); save(); toast('昵称已保存'); return; }
