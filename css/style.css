@@ -414,3 +414,11 @@ textarea.input { min-height: 72px; resize: vertical; }
   .today-kpis .kpi { padding: 5px 8px; }
   .hello-text b { font-size: 16px; }
 }
+
+/* ---------- 学习日报 ---------- */
+.switch-row { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 14px; }
+.switch-row input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--primary); flex: none; }
+.report-msg { flex: 1; min-width: 160px; color: var(--text-2); }
+.report-msg.ok { color: var(--good); }
+.report-msg.err { color: var(--bad); }
+.report-msg.live { color: var(--primary); }

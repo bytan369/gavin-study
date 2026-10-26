@@ -30,7 +30,7 @@
       version: 1,
       sessions: [],
       running: null,
-      settings: { name: '', goal: 120, theme: 'auto', hidden: [], custom: [] },
+      settings: { name: '', goal: 120, theme: 'auto', hidden: [], custom: [], reportEnabled: false },
       last: { subject: 'math', type: 'practice' },
     };
   }
@@ -968,6 +968,7 @@
     const st = state.settings;
     el.innerHTML = `
       <div class="card" id="sync-card"></div>
+      <div class="card" id="report-card"></div>
       <div class="card">
         <h3 class="card-title">基本设置</h3>
         <div class="set-row"><label for="s-name">昵称</label><input class="input" id="s-name" maxlength="12" placeholder="同学" value="${esc(st.name)}"></div>
@@ -1082,6 +1083,60 @@
         </div>`;
     }
     el.innerHTML = `<h3 class="card-title">☁️ 云同步 <small>多台设备共用学习记录</small></h3>${body}`;
+    renderReportCard();
+  }
+
+  // ---------------- 每晚学习日报 ----------------
+  let reportMsg = { text: '', tone: '' };
+
+  function renderReportCard() {
+    const el = $('#report-card');
+    if (!el) return;
+    const u = Cloud.getUser();
+    let body;
+    if (!Cloud.isConfigured()) {
+      body = '<p class="muted small" style="margin:0">需要先配置云同步才能使用。</p>';
+    } else if (!u) {
+      body = '<p class="muted small" style="margin:0">登录上面的云同步账号后，就可以每晚自动收到当天的学习日报。</p>';
+    } else {
+      body = `
+        <label class="switch-row">
+          <input type="checkbox" id="s-report" ${state.settings.reportEnabled ? 'checked' : ''}>
+          <span>每晚 23:30（北京时间）把当天的学习记录发到 <b>${esc(u.email || '')}</b></span>
+        </label>
+        <div class="row" style="margin-top:10px">
+          <button class="btn" data-act="report-test">✉️ 发送一封测试邮件</button>
+          <span class="small report-msg ${reportMsg.tone}" id="report-msg" role="status">${esc(reportMsg.text)}</span>
+        </div>
+        <p class="muted small" style="margin:10px 0 0">内容包括：总学习时间、各科时长、平均专注度和学习效果、每次学习的明细和你填的学习内容。当天没有学习也会发一封“今天没有学习记录”。邮件由云端发送，不用开着网页。</p>`;
+    }
+    el.innerHTML = `<h3 class="card-title">📧 每晚学习日报 <small>自动发到邮箱</small></h3>${body}`;
+  }
+
+  function setReportMsg(text, tone) {
+    reportMsg = { text, tone: tone || '' };
+    const m = $('#report-msg');
+    if (m) {
+      m.textContent = text;
+      m.className = `small report-msg ${tone || ''}`;
+    }
+  }
+
+  async function sendTestReport(btn) {
+    if (btn) btn.disabled = true;
+    try {
+      setReportMsg('正在把最新记录同步到云端…', 'live');
+      await Cloud.syncNow();
+      const st = Cloud.getStatus();
+      if (st.kind === 'error') throw new Error(`记录还没能同步到云端：${st.msg}`);
+      setReportMsg('正在发送…', 'live');
+      const r = await Cloud.sendTestReport();
+      setReportMsg(`已发送到 ${r.to}（今天共 ${r.count} 条学习记录），请查收；没看到的话再看看垃圾邮件。`, 'ok');
+    } catch (e) {
+      setReportMsg(e.message || '发送失败', 'err');
+    } finally {
+      if (btn && btn.isConnected) btn.disabled = false;
+    }
   }
 
   function renderSyncChip() {
@@ -1372,6 +1427,7 @@
       case 'forgot': authAction('forgot', btn); break;
       case 'signout': signOut(); break;
       case 'sync-now': Cloud.syncNow(); break;
+      case 'report-test': sendTestReport(btn); break;
       case 'goto-sync': switchTab('settings'); $('#sync-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       default: break;
     }
@@ -1401,6 +1457,13 @@
       const v = Math.round(Number(t.value));
       if (Number.isFinite(v) && v >= 10 && v <= 900) { state.settings.goal = v; markSettings(); save(); toast('每日目标已保存'); }
       else { t.value = state.settings.goal; toast('目标需在 10–900 分钟之间'); }
+      return;
+    }
+    if (t.id === 's-report') {
+      state.settings.reportEnabled = t.checked;
+      markSettings();
+      save();
+      toast(t.checked ? '已开启：每晚 23:30 发送学习日报' : '已关闭学习日报');
       return;
     }
     if (t.id === 's-theme') { state.settings.theme = t.value; markSettings(); save(); applyTheme(); return; }

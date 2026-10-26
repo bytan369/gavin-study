@@ -63,6 +63,26 @@
 - 正在进行的计时也会同步：在电脑上开始，可以在手机上结束。
 - 退出登录会清除本机上的记录（云端保留），方便在公用设备上使用。
 
+## 每晚学习日报（邮件）
+
+每晚 23:30（北京时间）由 Supabase 云端自动把当天的学习记录汇总成邮件，发到账号的登录邮箱：总学习时间、各科时长、平均专注度和学习效果、每次学习的明细和学习内容。当天没有学习也会发一封“今天没有学习记录”。网页「设置 → 每晚学习日报」里可以开关，也可以立即发一封测试邮件。
+
+原理：`pg_cron` 每晚定时调用 Edge Function `daily-report`，函数用 SMTP 发信（默认用 QQ 邮箱，端口 465）。关闭网页、关机都不影响。
+
+一次性配置（只需做一次）：
+1. **发件邮箱的授权码**：登录 QQ 邮箱网页版 → 设置 → 账号 → 开启「POP3/SMTP 服务」→ 生成**授权码**（不是 QQ 密码）。
+2. 在 Supabase 控制台 **Edge Functions → Secrets** 添加：
+   - `SMTP_USER` = 发件 QQ 邮箱地址（如 `123456@qq.com`）
+   - `SMTP_PASS` = 上一步的授权码
+   - 可选 `SMTP_HOST` / `SMTP_PORT`：默认 `smtp.qq.com` / `465`，用 163 邮箱可改成 `smtp.163.com` / `465`（Supabase 云函数连不上 25 和 587 端口，请用 465）
+   - 可选 `REPORT_CC`：所有日报都抄送的邮箱，多个用逗号分隔（比如家长的邮箱）。网页上改不了这一项
+3. 部署函数 `supabase/functions/daily-report`（`supabase functions deploy daily-report --no-verify-jwt`，或用 Supabase 的 MCP 部署），再在 SQL Editor 运行 [`supabase/daily_report.sql`](supabase/daily_report.sql)。
+
+安全设计：
+- 日报只发到**账号自己验证过的登录邮箱**（外加你在 `REPORT_CC` 里设置的邮箱）。网页上不能填任意收件地址，避免被人拿来群发垃圾邮件。
+- 定时调用靠数据库里随机生成的密钥校验，网页端读不到；测试邮件靠用户登录令牌校验，每人每天最多 5 封。
+- 同一天不会重复发送，23:45 会自动补发一次失败的。
+
 ## 部署（GitHub Pages）
 
 仓库自带 `.github/workflows/pages.yml`：代码合并到 `main` 分支后，会自动跑测试并发布网页。
@@ -86,3 +106,5 @@ npm test   # 运行评分模型的单元测试（需要 Node 18+）
 - `js/capture.js` — 语音和拍照识别录入学习内容
 - `js/config.js` — Supabase 配置（留空 = 仅本机）
 - `supabase/schema.sql` — 数据库表和访问权限
+- `supabase/functions/daily-report/` — 每晚日报邮件的云函数（`report.mjs` 内容生成，`core.mjs` 流程，`index.ts` 接线）
+- `supabase/daily_report.sql` — 日报的发送记录表和每晚 23:30 的定时任务

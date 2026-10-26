@@ -43,6 +43,7 @@
     if (typeof remote.name === 'string') out.name = remote.name.slice(0, 12);
     if (Number.isFinite(remote.goal) && remote.goal >= 10 && remote.goal <= 900) out.goal = remote.goal;
     if (['auto', 'light', 'dark'].includes(remote.theme)) out.theme = remote.theme;
+    if (typeof remote.reportEnabled === 'boolean') out.reportEnabled = remote.reportEnabled;
     if (Array.isArray(remote.hidden)) out.hidden = remote.hidden.filter((x) => typeof x === 'string');
     if (Array.isArray(remote.custom)) {
       out.custom = remote.custom.filter((c) => c && typeof c.id === 'string' && typeof c.name === 'string');
@@ -352,6 +353,20 @@
     if (error) throw new Error(translateError(error));
   }
 
+  // 让云端立刻给自己发一封今天的日报（测试邮件）。云端函数用登录令牌确认身份
+  async function sendTestReport() {
+    if (!client || !user) throw new Error('请先登录');
+    const { data, error } = await client.functions.invoke('daily-report', { body: { mode: 'test' } });
+    if (error) {
+      let msg = '';
+      const res = error.context;
+      try { msg = (await res.json()).error || ''; } catch (e) { /* 响应不是 JSON */ }
+      if (!msg && res && res.status === 404) msg = '日报功能还没有在云端部署好';
+      throw new Error(msg || translateError(error));
+    }
+    return data;
+  }
+
   // 退出前先尽量同步；返回 false 表示用户取消
   async function signOut(confirmLoss) {
     await sync();
@@ -368,7 +383,7 @@
     // 纯函数（供测试）
     emptySync, ensureSync, serializeRunning, sanitizeSettings, mergeRemoteSessions, applyRemoteProfile, pendingCount, translateError,
     // 浏览器端
-    init, schedule, syncNow: sync, signIn, signUp, resetPassword, updatePassword, signOut, isConfigured,
+    init, schedule, syncNow: sync, sendTestReport, signIn, signUp, resetPassword, updatePassword, signOut, isConfigured,
     getUser: () => user,
     getStatus: () => status,
   };
