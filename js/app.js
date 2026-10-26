@@ -2,6 +2,7 @@
   'use strict';
 
   const SC = window.Scoring;
+  const Cloud = window.Cloud;
   const KEY = 'gavin-study-v1';
   const DAY = 86400000;
   const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -14,6 +15,8 @@
   let historyFilter = 'all';
   const expanded = new Set();
   let form = null;
+  let authDraft = { email: '', password: '' };
+  let lastUid = null;
 
   const $ = (sel, el = document) => el.querySelector(sel);
   const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
@@ -43,12 +46,36 @@
     return d;
   }
 
-  function save() {
+  // 只写本地
+  function persist() {
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
     } catch (e) {
       toast('保存失败：浏览器存储不可用或已满');
     }
+  }
+
+  // 写本地，并在登录时安排一次云同步
+  function save() {
+    persist();
+    Cloud.schedule();
+  }
+
+  // 记录哪些数据需要上传到云端
+  function markSession(id) {
+    const s = Cloud.ensureSync(state);
+    if (s.owner && !s.dirtySessions.includes(id)) s.dirtySessions.push(id);
+  }
+  function markDeleted(id) {
+    const s = Cloud.ensureSync(state);
+    s.dirtySessions = s.dirtySessions.filter((x) => x !== id);
+    if (s.owner && !s.tombstones.includes(id)) s.tombstones.push(id);
+  }
+  function markSettings() {
+    Cloud.ensureSync(state).dirtySettings = true;
+  }
+  function markRunning() {
+    Cloud.ensureSync(state).dirtyRunning = true;
   }
 
   // ---------------- 工具函数 ----------------
@@ -168,6 +195,7 @@
       start: Date.now(),
       pauses: [],
     };
+    markRunning();
     save();
     renderStudy();
     toast(`开始学习 ${fmtHMS(state.running.start)}，加油！`);
@@ -178,6 +206,7 @@
     if (!run) return;
     if (isPaused(run)) run.pauses[run.pauses.length - 1].end = Date.now();
     else run.pauses.push({ start: Date.now(), end: null });
+    markRunning();
     save();
     renderStudy();
   }
@@ -201,6 +230,7 @@
     delete run.end;
     delete run.closedAtEnd;
     form = null;
+    markRunning();
     save();
     closeModal();
     renderStudy();
@@ -210,6 +240,7 @@
     if (!confirm('确定放弃本次学习吗？本次计时不会被记录。')) return;
     state.running = null;
     form = null;
+    markRunning();
     save();
     closeModal();
     renderStudy();
@@ -293,6 +324,9 @@
       </div>
       <div class="type-hint">结束时需要填写：${type.hint}（单位：${SC.unitOf(type, subjObj)}）</div>
     </div>
+
+    ${Cloud.isConfigured() && !Cloud.getUser() && Cloud.getStatus().kind === 'out' ? `
+    <div class="card row small">☁️ 登录后，学习记录可以在手机和电脑之间自动同步<span class="spacer"></span><button class="btn small" data-act="goto-sync">去登录</button></div>` : ''}
 
     <div class="card start-area">
       <button class="btn btn-primary btn-lg" data-act="start">▶ 开始学习 · ${esc(subjObj.emoji)} ${esc(subjObj.name)}</button>
@@ -454,6 +488,8 @@
     state.sessions.push(session);
     state.running = null;
     form = null;
+    markSession(session.id);
+    markRunning();
     save();
     renderStudy();
     showResult(session, true);
@@ -586,6 +622,7 @@
     if (!confirm(`删除 ${dayLabel(dayKey(s.start))} ${fmtHM(s.start)} 的${getSubject(s.subject).name}记录？`)) return;
     state.sessions = state.sessions.filter((x) => x.id !== id);
     expanded.delete(id);
+    markDeleted(id);
     save();
     renderCurrent();
     toast('已删除');
@@ -813,6 +850,7 @@
     const el = $('#tab-settings');
     const st = state.settings;
     el.innerHTML = `
+      <div class="card" id="sync-card"></div>
       <div class="card">
         <h3 class="card-title">基本设置</h3>
         <div class="set-row"><label for="s-name">昵称</label><input class="input" id="s-name" maxlength="12" placeholder="同学" value="${esc(st.name)}"></div>
@@ -844,7 +882,7 @@
       </div>
 
       <div class="card">
-        <h3 class="card-title">数据管理 <small>数据只保存在本机浏览器中</small></h3>
+        <h3 class="card-title">数据管理 <small>备份为文件，或从备份文件恢复</small></h3>
         <div class="row">
           <button class="btn" data-act="export">⬇️ 导出备份</button>
           <button class="btn" data-act="import">⬆️ 导入备份</button>
@@ -877,6 +915,177 @@
       </div>`;
   }
 
+  // ---------------- 云同步界面 ----------------
+  function syncStatusText(st) {
+    if (st.kind === 'syncing') return '⏳ 正在同步…';
+    if (st.kind === 'ok') {
+      const n = Cloud.pendingCount(state);
+      return `✅ 已同步 · ${fmtHMS(st.at)}${n ? `（还有 ${n} 项待上传）` : ''}`;
+    }
+    if (st.kind === 'error') return `⚠️ 同步失败：${st.msg}（会自动重试）`;
+    return '准备同步…';
+  }
+
+  function renderSyncCard() {
+    const el = $('#sync-card');
+    if (!el) return;
+    const st = Cloud.getStatus();
+    const u = Cloud.getUser();
+    let body;
+    if (st.kind === 'unconfigured') {
+      body = '<p class="muted small" style="margin:0">还没有配置 Supabase，记录暂时只保存在这台设备上。配置方法见项目 README 的「云同步」一节。</p>';
+    } else if (st.kind === 'unavailable') {
+      body = `<p class="err" style="margin:0">${esc(st.msg)}</p>`;
+    } else if (st.kind === 'loading' || st.kind === 'off') {
+      body = '<p class="muted small" style="margin:0">正在连接云端…</p>';
+    } else if (!u) {
+      body = `
+        <form id="auth-form" class="auth-form" novalidate>
+          <input class="input" name="email" type="email" autocomplete="email" placeholder="邮箱" value="${esc(authDraft.email)}" aria-label="邮箱">
+          <input class="input" name="password" type="password" autocomplete="current-password" placeholder="密码（至少 6 位）" value="${esc(authDraft.password)}" aria-label="密码">
+          <div class="row">
+            <button class="btn btn-primary" type="submit">登录</button>
+            <button class="btn" type="button" data-act="signup">注册新账号</button>
+            <span class="spacer"></span>
+            <button class="btn btn-ghost small" type="button" data-act="forgot">忘记密码</button>
+          </div>
+          <div class="auth-msg" id="auth-msg" role="status"></div>
+          <p class="muted small" style="margin:0">登录后，这台设备上的记录会自动上传并与其他设备合并；手机、电脑用同一个账号登录即可同步。</p>
+        </form>`;
+    } else {
+      body = `
+        <div class="row">
+          <div>
+            <div>已登录：<b>${esc(u.email || '')}</b></div>
+            <div class="small ${st.kind === 'error' ? 'err' : 'muted'}">${esc(syncStatusText(st))}</div>
+          </div>
+          <span class="spacer"></span>
+          <button class="btn" data-act="sync-now" ${st.kind === 'syncing' ? 'disabled' : ''}>🔄 立即同步</button>
+          <button class="btn btn-ghost" data-act="signout">退出登录</button>
+        </div>`;
+    }
+    el.innerHTML = `<h3 class="card-title">☁️ 云同步 <small>多台设备共用学习记录</small></h3>${body}`;
+  }
+
+  function renderSyncChip() {
+    const chip = $('#sync-chip');
+    const st = Cloud.getStatus();
+    const u = Cloud.getUser();
+    let text = '';
+    let cls = '';
+    if (['unconfigured', 'off', 'loading'].includes(st.kind)) text = '';
+    else if (st.kind === 'unavailable') { text = '⚠️ 同步不可用'; cls = 'bad'; }
+    else if (!u) { text = '☁️ 未登录'; cls = 'muted'; }
+    else if (st.kind === 'error') { text = '⚠️ 同步失败'; cls = 'bad'; }
+    else if (st.kind === 'ok') { text = '☁️ 已同步'; cls = 'good'; }
+    else text = '☁️ 同步中';
+    chip.hidden = !text;
+    chip.textContent = text;
+    chip.className = `sync-chip ${cls}`;
+  }
+
+  function authMsg(text, ok) {
+    const m = $('#auth-msg');
+    if (!m) return toast(text);
+    m.textContent = text;
+    m.className = `auth-msg ${ok ? 'ok' : 'err'}`;
+  }
+
+  function readAuthForm() {
+    const f = $('#auth-form');
+    if (f) authDraft = { email: f.email.value.trim(), password: f.password.value };
+    return authDraft;
+  }
+
+  async function authAction(kind, btn) {
+    const { email, password } = readAuthForm();
+    if (!email) return authMsg('请填写邮箱');
+    if (kind !== 'forgot' && password.length < 6) return authMsg('密码至少需要 6 位');
+    if (btn) btn.disabled = true;
+    try {
+      if (kind === 'in') {
+        await Cloud.signIn(email, password);
+        authDraft = { email: '', password: '' };
+        toast('登录成功，正在同步');
+      } else if (kind === 'up') {
+        const r = await Cloud.signUp(email, password);
+        if (r.needConfirm) authMsg('注册成功！请到邮箱点击确认链接，然后回到这里登录。', true);
+        else { authDraft = { email: '', password: '' }; toast('注册成功，已登录'); }
+      } else {
+        await Cloud.resetPassword(email);
+        authMsg('重置密码的邮件已发送，请查收邮箱。', true);
+      }
+    } catch (e) {
+      authMsg(e.message);
+    } finally {
+      if (btn && btn.isConnected) btn.disabled = false;
+    }
+  }
+
+  async function signOut() {
+    const ok = await Cloud.signOut((n) => confirm(`还有 ${n} 项改动没能同步到云端，退出后这些改动会丢失。确定退出吗？`));
+    if (ok) toast('已退出登录，本机记录已清除');
+  }
+
+  function openRecovery() {
+    openModal(`
+      <h3>设置新密码</h3>
+      <form id="recovery-form" novalidate>
+        <div class="field"><input class="input" name="password" type="password" autocomplete="new-password" placeholder="新密码（至少 6 位）" aria-label="新密码"></div>
+        <div class="err" id="recovery-err"></div>
+        <div class="form-actions"><button type="button" class="btn" data-act="close">取消</button><button type="submit" class="btn btn-primary">保存</button></div>
+      </form>`);
+  }
+
+  async function submitRecovery(f) {
+    const pw = f.password.value;
+    if (pw.length < 6) { $('#recovery-err').textContent = '密码至少需要 6 位'; return; }
+    try {
+      await Cloud.updatePassword(pw);
+      closeModal();
+      toast('新密码已保存');
+    } catch (e) {
+      $('#recovery-err').textContent = e.message;
+    }
+  }
+
+  function onCloudStatus() {
+    renderSyncChip();
+    if (currentTab === 'settings') {
+      const a = document.activeElement;
+      if (!(a && a.closest && a.closest('#auth-form'))) renderSyncCard();
+    }
+    const u = Cloud.getUser();
+    const uid = u ? u.id : null;
+    if (uid !== lastUid) {
+      lastUid = uid;
+      if (currentTab === 'settings') renderSyncCard();
+      if (currentTab === 'study' && !state.running) renderStudy();
+    }
+  }
+
+  function onCloudData() {
+    applyTheme();
+    const a = document.activeElement;
+    // 正在输入时不刷新页面，避免打断
+    if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && a.closest('#tab-settings, #modal')) return;
+    renderCurrent();
+    if (state.running && !state.running.end && currentTab === 'study') updateClock();
+  }
+
+  function resetLocal() {
+    const keep = { theme: state.settings.theme, last: state.last };
+    state = defaults();
+    state.settings.theme = keep.theme;
+    state.last = keep.last;
+    form = null;
+    expanded.clear();
+    if (!$('#modal').hidden) closeModal();
+    persist();
+    applyTheme();
+    renderCurrent();
+  }
+
   function applyTheme() {
     const t = state.settings.theme;
     if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
@@ -892,6 +1101,7 @@
     state.settings.custom.push({
       id: `c_${Date.now().toString(36)}`, name, emoji, color: palette[state.settings.custom.length % palette.length], quiz: 0.5,
     });
+    markSettings();
     save();
     renderSettings();
     toast(`已添加科目：${name}`);
@@ -904,6 +1114,7 @@
     state.settings.custom = state.settings.custom.filter((x) => x.id !== id);
     state.settings.hidden = state.settings.hidden.filter((x) => x !== id);
     if (state.last.subject === id) state.last.subject = 'math';
+    markSettings();
     save();
     renderSettings();
   }
@@ -934,10 +1145,14 @@
         const have = new Set(state.sessions.map((s) => s.id));
         const add = list.filter((s) => !have.has(s.id));
         state.sessions = state.sessions.concat(add);
+        add.forEach((x) => markSession(x.id));
         if (data.settings && Array.isArray(data.settings.custom)) {
           const ids = new Set(state.settings.custom.map((c) => c.id));
           for (const c of data.settings.custom) {
-            if (c && typeof c.id === 'string' && typeof c.name === 'string' && !ids.has(c.id)) state.settings.custom.push(c);
+            if (c && typeof c.id === 'string' && typeof c.name === 'string' && !ids.has(c.id)) {
+              state.settings.custom.push(c);
+              markSettings();
+            }
           }
         }
         save();
@@ -951,7 +1166,9 @@
   }
 
   function clearAll() {
-    if (!confirm('确定清空全部学习记录吗？此操作无法撤销，建议先导出备份。')) return;
+    const cloud = Cloud.getUser() ? '（云端的记录也会一起删除）' : '';
+    if (!confirm(`确定清空全部学习记录吗？${cloud}此操作无法撤销，建议先导出备份。`)) return;
+    state.sessions.forEach((x) => markDeleted(x.id));
     state.sessions = [];
     save();
     renderCurrent();
@@ -983,7 +1200,7 @@
     if (currentTab === 'study') renderStudy();
     else if (currentTab === 'history') renderHistory();
     else if (currentTab === 'stats') renderStats();
-    else renderSettings();
+    else { renderSettings(); renderSyncCard(); }
   }
   function switchTab(tab) {
     currentTab = tab;
@@ -1031,6 +1248,11 @@
       case 'export': exportData(); break;
       case 'import': $('#import-file').click(); break;
       case 'clear': clearAll(); break;
+      case 'signup': authAction('up', btn); break;
+      case 'forgot': authAction('forgot', btn); break;
+      case 'signout': signOut(); break;
+      case 'sync-now': Cloud.syncNow(); break;
+      case 'goto-sync': switchTab('settings'); $('#sync-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       default: break;
     }
   });
@@ -1039,6 +1261,12 @@
     if (e.target.id === 'finish-form') {
       e.preventDefault();
       submitFinish();
+    } else if (e.target.id === 'auth-form') {
+      e.preventDefault();
+      authAction('in', $('button[type=submit]', e.target));
+    } else if (e.target.id === 'recovery-form') {
+      e.preventDefault();
+      submitRecovery(e.target);
     }
   });
 
@@ -1046,21 +1274,26 @@
     const t = e.target;
     if (t.id === 'history-filter') { historyFilter = t.value; renderHistory(); return; }
     if (t.id === 'import-file' && t.files[0]) { importData(t.files[0]); t.value = ''; return; }
-    if (t.id === 's-name') { state.settings.name = t.value.trim(); save(); toast('昵称已保存'); return; }
+    if (t.id === 's-name') { state.settings.name = t.value.trim(); markSettings(); save(); toast('昵称已保存'); return; }
     if (t.id === 's-goal') {
       const v = Math.round(Number(t.value));
-      if (Number.isFinite(v) && v >= 10 && v <= 900) { state.settings.goal = v; save(); toast('每日目标已保存'); }
+      if (Number.isFinite(v) && v >= 10 && v <= 900) { state.settings.goal = v; markSettings(); save(); toast('每日目标已保存'); }
       else { t.value = state.settings.goal; toast('目标需在 10–900 分钟之间'); }
       return;
     }
-    if (t.id === 's-theme') { state.settings.theme = t.value; save(); applyTheme(); return; }
+    if (t.id === 's-theme') { state.settings.theme = t.value; markSettings(); save(); applyTheme(); return; }
     if (t.dataset.subj) {
       const sid = t.dataset.subj;
       const hidden = state.settings.hidden.filter((x) => x !== sid);
       if (!t.checked) hidden.push(sid);
       state.settings.hidden = hidden;
+      markSettings();
       save();
     }
+  });
+
+  document.addEventListener('input', (e) => {
+    if (e.target.closest('#auth-form')) readAuthForm();
   });
 
   document.addEventListener('keydown', (e) => {
@@ -1090,4 +1323,5 @@
   renderStudy();
   if (state.running && state.running.end) openFinishForm();
   setInterval(updateClock, 250);
+  Cloud.init({ getState: () => state, persist, onData: onCloudData, onStatus: onCloudStatus, resetLocal, onRecovery: openRecovery });
 })();

@@ -4,7 +4,8 @@
 
 ## 使用方法
 
-直接用浏览器打开 `index.html` 即可，不需要安装任何东西，手机和电脑都能用。数据保存在本机浏览器里（可在「设置」中导出/导入备份）。
+网页通过 GitHub Pages 发布（见下方「部署」），手机和电脑用浏览器打开网址即可；也可以直接双击打开 `index.html` 在本机使用。
+配置 Supabase 后，用同一个账号登录的所有设备会自动同步学习记录；不配置则数据只保存在本机浏览器里（可在「设置」中导出/导入备份）。
 
 1. **选择科目**：语文、数学、英语、物理、化学、生物、历史、地理、道法/政治、科学、信息技术、通用技术、音乐、美术、体育与健康、书法、第二外语、综合实践、其他，还可以在设置中自定义添加或隐藏科目。
 2. **选择学习方式**：做题练习、写作业、阅读/预习、背诵/记忆、复习/整理、写作/练笔、听力/口语、技能练习。
@@ -29,6 +30,34 @@
 
 参考速度和各项权重都在 `js/scoring.js` 中，可以按自己的实际情况调整。
 
+## 云同步（Supabase）
+
+1. 在 [supabase.com](https://supabase.com) 注册并新建一个项目（免费版即可）。
+2. 打开项目的 **SQL Editor**，把 [`supabase/schema.sql`](supabase/schema.sql) 的全部内容粘贴进去运行一次。它会建好两张表，并开启行级安全（每个账号只能读写自己的数据）。
+3. 打开 **Project Settings → API**，复制 **Project URL** 和 **anon / publishable key**。
+4. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 中新建两个仓库变量：
+   - `SUPABASE_URL` = Project URL
+   - `SUPABASE_ANON_KEY` = anon / publishable key
+
+   （也可以直接把这两个值填进 `js/config.js` 再提交。anon key 本来就是给网页用的公开密钥，数据靠行级安全保护；**千万不要填 service_role / secret key**。）
+5. 打开 **Authentication → URL Configuration**，把 **Site URL** 设为网页地址（如 `https://<用户名>.github.io/gavin-study/`），并把同一地址加入 **Redirect URLs**。这样注册确认邮件和重置密码邮件里的链接才会跳回网页。
+6. 可选：如果不想注册时收确认邮件，可以在 **Authentication → Sign In / Providers → Email** 关闭 **Confirm email**。
+
+同步规则：
+- 记录先保存在本机，联网且登录时自动上传，并每 30 秒、切回页面时拉取其他设备的改动；离线时照常使用，联网后自动补传。
+- 第一次登录时，这台设备上已有的记录会自动上传并与云端合并。
+- 正在进行的计时也会同步：在电脑上开始，可以在手机上结束。
+- 退出登录会清除本机上的记录（云端保留），方便在公用设备上使用。
+
+## 部署（GitHub Pages）
+
+仓库自带 `.github/workflows/pages.yml`：代码合并到 `main` 分支后，会自动跑测试并发布网页。
+
+1. 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。
+2. 合并到 `main`（或在 **Actions** 页手动运行 “Deploy to GitHub Pages”），完成后网址显示在 Pages 设置页，一般是 `https://<用户名>.github.io/gavin-study/`。
+
+注意：免费的 GitHub 账号只能给**公开仓库**开启 Pages；私有仓库需要 GitHub Pro。仓库里没有任何密码或密钥（anon key 是公开的），设为公开也没有安全问题，学习记录存在 Supabase 中、不会出现在仓库里。
+
 ## 开发
 
 ```
@@ -39,3 +68,6 @@ npm test   # 运行评分模型的单元测试（需要 Node 18+）
 - `css/style.css` — 样式（支持浅色/深色）
 - `js/scoring.js` — 科目、学习方式与评分模型
 - `js/app.js` — 计时、记录、统计、设置等交互
+- `js/cloud.js` — Supabase 登录与同步
+- `js/config.js` — Supabase 配置（留空 = 仅本机）
+- `supabase/schema.sql` — 数据库表和访问权限
