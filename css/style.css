@@ -363,3 +363,13 @@ textarea.input { min-height: 72px; resize: vertical; }
 .auth-msg.ok { color: var(--good); }
 .auth-msg.err { color: var(--bad); }
 .btn:disabled { opacity: .55; cursor: default; }
+
+/* ---------- 语音 / 拍照录入 ---------- */
+.capture-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.capture-bar select.input { width: auto; padding: 6px 10px; font-size: 13px; }
+.capture-status { font-size: 13px; margin-bottom: 8px; padding: 6px 10px; border-radius: 10px; background: var(--card-2); color: var(--text-2); word-break: break-all; }
+.capture-status:empty { display: none; }
+.capture-status.live { background: var(--primary-soft); color: var(--primary); }
+.capture-status.ok { background: var(--good-soft); color: var(--good); }
+.capture-status.err { background: var(--bad-soft); color: var(--bad); }
+#f-note { min-height: 120px; }
