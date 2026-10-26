@@ -1385,7 +1385,9 @@
     if (!el) return;
     const p = AI.getProvider(ai.provider);
     const c = ai.configs[ai.provider];
-    const models = Array.from(new Set(p.models.concat(aiModels)));
+    // 预设模型带说明（如“免费”“推荐”），再加上从服务商拉取到的列表
+    const known = new Set(p.models.map((m) => m.id));
+    const models = p.models.concat(aiModels.filter((id) => !known.has(id)).map((id) => ({ id, tag: '' })));
     el.innerHTML = `
       <h3 class="card-title">🤖 AI 评估 <small>用大模型评估专注度和学习效果</small></h3>
       <label class="switch-row">
@@ -1404,10 +1406,11 @@
       <div class="field">
         <label for="ai-model">模型名称</label>
         <div class="row" style="flex-wrap:nowrap">
-          <input class="input" id="ai-model" list="ai-models" value="${esc(c.model)}" placeholder="${esc(p.models[0] || '模型名称')}" autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
+          <input class="input" id="ai-model" list="ai-models" value="${esc(c.model)}" placeholder="${esc(p.models[0] ? p.models[0].id : '模型名称')}" autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
           <button class="btn small" type="button" data-act="ai-models">获取列表</button>
         </div>
-        <datalist id="ai-models">${models.map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+        <datalist id="ai-models">${models.map((m) => `<option value="${esc(m.id)}"${m.tag ? ` label="${esc(m.tag)}"` : ''}></option>`).join('')}</datalist>
+        ${p.models.length ? `<div class="model-chips">${p.models.map((m) => `<button type="button" class="chip ${m.id === c.model ? 'selected' : ''}" data-act="ai-pick-model" data-v="${esc(m.id)}">${esc(m.id)}${m.tag ? ` <small>${esc(m.tag)}</small>` : ''}</button>`).join('')}</div>` : ''}
         ${p.modelHint ? `<div class="help">${esc(p.modelHint)}</div>` : ''}
       </div>
       <div class="field">
@@ -1861,6 +1864,7 @@
       case 'ai-showkey': { const k = $('#ai-key'); const show = k.type === 'password'; k.type = show ? 'text' : 'password'; btn.textContent = show ? '隐藏' : '显示'; break; }
       case 'ai-clearkey': ai.configs[ai.provider].key = ''; saveAi(); aiMsg = { text: '', tone: '' }; renderAiCard(); toast('已清除这个服务商的密钥'); break;
       case 'ai-eval': runAi(id); break;
+      case 'ai-pick-model': ai.configs[ai.provider].model = btn.dataset.v; saveAi(); renderAiCard(); break;
       case 'goto-sync': switchTab('settings'); $('#sync-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       default: break;
     }

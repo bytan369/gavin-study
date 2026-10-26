@@ -10,37 +10,55 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // 以下服务商的接口都允许从网页直接调用（浏览器跨域检查已确认）。模型名可以在设置里改。
+  // 以下服务商的接口都在浏览器里实测过可以从网页直接调用（2026 年 10 月）。模型名可以在设置里改，
+  // 「获取列表」能拉取服务商当前可用的全部模型。tag 会显示在模型下拉提示里。
+  // 腾讯混元（TokenHub）、豆包（火山方舟）、智谱、讯飞星火、百度千帆的接口会被浏览器的跨域限制拦截，所以没有放进来。
   const PROVIDERS = [
     {
-      id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat',
-      models: ['deepseek-chat', 'deepseek-reasoner'], keyUrl: 'https://platform.deepseek.com/api_keys',
+      id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash',
+      models: [{ id: 'deepseek-flash', tag: 'V4.1 Flash，快、便宜（推荐）' }, { id: 'deepseek-v4-pro', tag: 'V4 Pro，更强' }],
+      keyUrl: 'https://platform.deepseek.com/api_keys',
+      // V4 默认开启思考模式，评分用不上，关掉更快更省
+      extra: () => ({ thinking: { type: 'disabled' } }),
     },
     {
-      id: 'qwen', name: '通义千问（阿里云百炼）', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus',
-      models: ['qwen-plus', 'qwen-turbo', 'qwen-max', 'qwen-flash'], keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1',
+      id: 'qwen', name: '通义千问（阿里云百炼，新用户有免费额度）', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-flash',
+      models: [{ id: 'qwen3.8-flash', tag: '快、便宜（推荐）' }, { id: 'qwen3.7-plus', tag: '均衡' }, { id: 'qwen3.8-max', tag: '最强' }],
+      keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1',
+      modelHint: '阿里云百炼新用户每个模型都有一定的免费额度，用完后按量计费。',
+      extra: () => ({ enable_thinking: false }),
     },
     {
-      id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2',
-      models: ['MiniMax-M2', 'MiniMax-Text-01'], keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+      id: 'siliconflow', name: '硅基流动（有免费模型）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen3-8B',
+      models: [{ id: 'Qwen/Qwen3-8B', tag: '免费（推荐）' }, { id: 'THUDM/GLM-4-9B-0414', tag: '免费' }],
+      keyUrl: 'https://cloud.siliconflow.cn/account/ak',
+      modelHint: '标「免费」的模型不收费，免费名单以硅基流动控制台模型广场的「免费」标签为准；也可以点「获取列表」选其他模型（可能收费）。电脑和安卓浏览器实测可用，iPhone / iPad 上还没实测，如果提示“连不上服务商”，请换用其他服务商。',
+      extra: (model) => (/qwen3/i.test(model) ? { enable_thinking: false } : {}),
     },
     {
-      id: 'kimi', name: 'Kimi（月之暗面）', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k2-turbo-preview',
-      models: ['kimi-k2-turbo-preview', 'kimi-k2-0905-preview', 'moonshot-v1-8k'], keyUrl: 'https://platform.moonshot.cn/console/api-keys',
+      id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.cn/v1', model: 'MiniMax-M3.1-Flash',
+      models: [{ id: 'MiniMax-M3.1-Flash', tag: '快（推荐）' }, { id: 'MiniMax-M3', tag: '更强' }],
+      keyUrl: 'https://platform.minimax.cn',
     },
     {
-      id: 'hunyuan', name: '腾讯混元', baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1', model: 'hunyuan-turbos-latest',
-      models: ['hunyuan-turbos-latest', 'hunyuan-lite'], keyUrl: 'https://console.cloud.tencent.com/hunyuan/api-key',
-    },
-    {
-      id: 'doubao', name: '豆包（火山方舟，未实测）', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: '',
-      models: [], keyUrl: 'https://console.volcengine.com/ark', modelHint: '填写在方舟控制台创建的「接入点 ID」（形如 ep-xxxx）或模型名',
+      id: 'kimi', name: 'Kimi（月之暗面）', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k3',
+      models: [{ id: 'kimi-k3', tag: '推荐' }, { id: 'kimi-k3.1-pro', tag: '最新最强' }, { id: 'kimi-k3.1-pro-highspeed', tag: '最强·高速' }, { id: 'kimi-k2.6', tag: '便宜' }],
+      keyUrl: 'https://platform.kimi.com',
     },
     {
       id: 'custom', name: '自定义（OpenAI 兼容）', baseUrl: '', model: '', models: [], keyUrl: '',
       modelHint: '任何兼容 OpenAI /chat/completions 的服务，需允许浏览器跨域访问',
     },
   ];
+
+  // 旧版本的默认模型 / 已下线的模型，读取配置时自动换成现在的推荐模型
+  const RETIRED_MODELS = {
+    deepseek: { 'deepseek-chat': 'deepseek-flash', 'deepseek-reasoner': 'deepseek-v4-pro', 'deepseek-v4-flash': 'deepseek-flash' },
+    qwen: { 'qwen-plus': 'qwen3.8-flash' },
+    minimax: { 'MiniMax-M2': 'MiniMax-M3.1-Flash', 'MiniMax-Text-01': 'MiniMax-M3.1-Flash' },
+    kimi: { 'kimi-k2-turbo-preview': 'kimi-k3', 'kimi-k2-0905-preview': 'kimi-k3', 'moonshot-v1-8k': 'kimi-k3' },
+  };
+  const OLD_BASE_URLS = { minimax: { 'https://api.minimaxi.com/v1': 'https://api.minimax.cn/v1' } };
 
   const TIMEOUT_MS = 60000;
   const NOTE_MAX = 400;
@@ -64,9 +82,11 @@
     for (const p of PROVIDERS) {
       const r = raw.configs && raw.configs[p.id];
       if (r && typeof r === 'object') {
+        const base = typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : p.baseUrl;
+        const model = typeof r.model === 'string' ? r.model.trim() : p.model;
         cfg.configs[p.id] = {
-          baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : p.baseUrl,
-          model: typeof r.model === 'string' ? r.model.trim() : p.model,
+          baseUrl: (OLD_BASE_URLS[p.id] || {})[base.replace(/\/+$/, '')] || base,
+          model: (RETIRED_MODELS[p.id] || {})[model] || model,
           key: typeof r.key === 'string' ? r.key.trim() : '',
         };
       }
@@ -224,13 +244,19 @@
     }
   }
 
+  // 各服务商的附加参数（比如关闭思考模式）；自定义服务商不加
+  function extraBody(cfg) {
+    const p = PROVIDERS.find((x) => x.id === cfg.provider);
+    return p && p.extra ? p.extra(String(cfg.model || '')) : {};
+  }
+
   async function chat(cfg, messages, opts) {
     const body = await request(chatUrl(cfg.baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${String(cfg.key).trim()}` },
-      body: JSON.stringify({
-        model: String(cfg.model).trim(), messages, temperature: 0.3, max_tokens: (opts && opts.maxTokens) || 2000, stream: false,
-      }),
+      body: JSON.stringify(Object.assign({
+        model: String(cfg.model).trim(), messages, temperature: 0.3, max_tokens: (opts && opts.maxTokens) || 4096, stream: false,
+      }, extraBody(cfg))),
     }, opts);
     let j;
     try {
@@ -253,7 +279,7 @@
     const bad = validateConfig(cfg);
     if (bad) throw fail('config', bad);
     const t0 = Date.now();
-    const reply = await chat(cfg, [{ role: 'user', content: '请只回复两个字：你好' }], Object.assign({ maxTokens: 200, timeout: 30000 }, opts));
+    const reply = await chat(cfg, [{ role: 'user', content: '请只回复两个字：你好' }], Object.assign({ maxTokens: 1024, timeout: 30000 }, opts));
     return { ms: Date.now() - t0, reply: reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim().slice(0, 30) };
   }
 
@@ -268,7 +294,7 @@
   }
 
   return {
-    PROVIDERS, getProvider, emptyConfig, normalizeConfig, normalizeBaseUrl, isSafeBaseUrl, validateConfig,
+    PROVIDERS, RETIRED_MODELS, extraBody, getProvider, emptyConfig, normalizeConfig, normalizeBaseUrl, isSafeBaseUrl, validateConfig,
     buildMessages, parseReply, chatUrl, describeHttp, evaluate, testConnection, listModels, SYSTEM_PROMPT,
   };
 });
