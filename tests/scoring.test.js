@@ -58,3 +58,29 @@ test('等级划分', () => {
   assert.strictEqual(SC.level(60).label, '合格');
   assert.strictEqual(SC.level(10).label, '加油');
 });
+
+test('没填学习量：不扣分也不白送分，按其他项估算', () => {
+  const base = { subject: math, type: 'practice', totalMin: 45, activeMin: 45, interruptions: 0, focusSelf: 5, mastery: 5 };
+  const blank = SC.computeScores({ ...base, amount: null });
+  assert.strictEqual(blank.focus, 100);
+  assert.strictEqual(blank.effect, 100);
+  assert.strictEqual(blank.metrics.noAmount, true);
+  assert.strictEqual(blank.metrics.pace, null);
+  assert.ok(!blank.tips.some((t) => t.includes('学习量偏少')));
+
+  // 明确填 0 才会被判为没学东西
+  const zero = SC.computeScores({ ...base, amount: 0, correct: null });
+  assert.ok(zero.focus < blank.focus && zero.effect < blank.effect);
+  assert.strictEqual(zero.metrics.noAmount, false);
+
+  // 一般表现：估算值居中，且各项不超过满分
+  const mid = SC.computeScores({ subject: math, type: 'reading', totalMin: 40, activeMin: 30, interruptions: 2, focusSelf: 3, mastery: 3, amount: '' });
+  assert.ok(mid.focus > 0 && mid.focus < 100 && mid.effect > 0 && mid.effect < 100);
+  for (const [k, v] of Object.entries(mid.focusParts)) assert.ok(v <= SC.FOCUS_LABELS[k].max + 0.05, k);
+  for (const [k, v] of Object.entries(mid.effectParts)) assert.ok(v <= SC.EFFECT_LABELS[k].max + 0.05, k);
+});
+
+test('没填学习量时忽略做对题数', () => {
+  const r = SC.computeScores({ subject: math, type: 'practice', totalMin: 30, activeMin: 30, interruptions: 0, focusSelf: 4, mastery: 3, amount: null, correct: 5 });
+  assert.strictEqual(r.metrics.accuracy, null);
+});

@@ -75,7 +75,7 @@
    *   totalMin     开始到结束的总分钟数
    *   activeMin    扣除暂停后的有效学习分钟数
    *   interruptions 走神/被打断次数
-   *   amount       学习量
+   *   amount       学习量；null / 空 = 没填（不按学习量评分，相关两项按其他项估算）
    *   correct      做对题数（可为 null）
    *   focusSelf    自评专注 1-5
    *   mastery      自评掌握 1-5
@@ -85,7 +85,8 @@
     const type = getType(inp.type);
     const totalMin = Math.max(+inp.totalMin || 0, 0);
     const activeMin = clamp(+inp.activeMin || 0, 0, totalMin);
-    const amount = Math.max(+inp.amount || 0, 0);
+    const noAmount = inp.amount === null || inp.amount === undefined || inp.amount === '';
+    const amount = noAmount ? 0 : Math.max(+inp.amount || 0, 0);
     const interruptions = Math.max(Math.round(+inp.interruptions || 0), 0);
     const focusSelf = clamp(Math.round(+inp.focusSelf || 3), 1, 5);
     const mastery = clamp(Math.round(+inp.mastery || 3), 1, 5);
@@ -98,32 +99,37 @@
     const activeRatio = totalMin > 0 ? activeMin / totalMin : 0;
     // 每 30 分钟的中断次数；不足 10 分钟按 10 分钟算，避免短时学习被放大
     const interruptRate = (interruptions / Math.max(activeMin, 10)) * 30;
-    const paceScore = clamp(pace / 0.9, 0, 1);
     const masteryScore = (mastery - 1) / 4;
 
     const focusParts = {
       active: 35 * clamp((activeRatio - 0.5) / 0.45, 0, 1),
       calm: 25 * clamp(1 - interruptRate / 4, 0, 1),
-      pace: 25 * paceScore,
+      pace: 0,
       self: 15 * ((focusSelf - 1) / 4),
     };
+    // 没填学习量时，学习效率这一项按其他三项的得分比例估算，不扣分也不白送分
+    const paceScore = noAmount
+      ? (focusParts.active + focusParts.calm + focusParts.self) / 75
+      : clamp(pace / 0.9, 0, 1);
+    focusParts.pace = 25 * paceScore;
     const focus = Math.round(sum(focusParts));
 
     const quality = accuracy === null
       ? masteryScore
       : 0.75 * clamp((accuracy - 0.4) / 0.55, 0, 1) + 0.25 * masteryScore;
     const effectParts = {
-      amount: 30 * paceScore,
+      amount: 0,
       quality: 35 * quality,
       duration: 15 * Math.sqrt(clamp(activeMin / 40, 0, 1)),
       focus: 20 * (focus / 100),
     };
+    effectParts.amount = 30 * (noAmount ? (effectParts.quality + effectParts.duration + effectParts.focus) / 70 : paceScore);
     const effect = Math.round(sum(effectParts));
 
     const tips = [];
     if (activeRatio < 0.8 && totalMin >= 5) tips.push('暂停时间占比偏高，尽量一口气学完一段，再集中休息。');
     if (interruptRate >= 2) tips.push('走神/被打断较多，试试把手机放远一点，用番茄钟：专注 25 分钟 + 休息 5 分钟。');
-    if (pace < 0.6) tips.push('这次学习量偏少，开始前给自己定个小目标，比如「30 分钟完成 12 道题」。');
+    if (!noAmount && pace < 0.6) tips.push('这次学习量偏少，开始前给自己定个小目标，比如「30 分钟完成 12 道题」。');
     if (accuracy !== null && accuracy < 0.7) {
       tips.push(pace > 1.4 ? '速度很快但正确率不高，放慢一点，先求准再求快。' : '正确率偏低，把错题抄到错题本，弄懂每道错题再往下做。');
     }
@@ -141,9 +147,10 @@
       metrics: {
         activeRatio: r1(activeRatio * 100),
         interruptRate: r1(interruptRate),
-        pace: r1(pace * 100),
+        noAmount,
+        pace: noAmount ? null : r1(pace * 100),
         accuracy: accuracy === null ? null : r1(accuracy * 100),
-        expected: r1(expected),
+        expected: noAmount ? null : r1(expected),
       },
       tips: tips.slice(0, 3),
     };

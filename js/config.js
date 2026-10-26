@@ -7,4 +7,6 @@
 window.STUDY_CONFIG = {
   supabaseUrl: 'https://xvltwxmemntfjgwnekaq.supabase.co',
   supabaseAnonKey: 'sb_publishable_Z5LA0ATwv8KggyZ73cGApg_7XeMNqoM',
+  // 每晚邮件日报：云端函数 daily-report 和定时任务（supabase/daily_report.sql）部署好之后改成 true
+  dailyReport: false,
 };
