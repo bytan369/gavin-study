@@ -422,3 +422,16 @@ textarea.input { min-height: 72px; resize: vertical; }
 .report-msg.ok { color: var(--good); }
 .report-msg.err { color: var(--bad); }
 .report-msg.live { color: var(--primary); }
+
+/* ---------- AI 评估 ---------- */
+.ai-status-line { margin: 6px 0 0; color: var(--text-2); }
+.ai-status { margin: 10px 0; padding: 8px 12px; border-radius: 10px; background: var(--card-2); font-size: 13px; color: var(--text-2); text-align: center; }
+.ai-status.live { background: var(--primary-soft); color: var(--primary); }
+.ai-status.err { background: var(--bad-soft); color: var(--bad); text-align: left; }
+.ai-box { margin: 12px 0; padding: 12px 14px; border-radius: 12px; background: var(--primary-soft); font-size: 14px; }
+.ai-box p { margin: 6px 0 0; }
+.ai-head { font-weight: 700; }
+.ai-head small { font-weight: 400; color: var(--muted); margin-left: 4px; }
+details.rule-detail { margin-top: 10px; }
+details.rule-detail summary { cursor: pointer; color: var(--text-2); font-size: 13px; padding: 6px 0; }
+.field a { color: var(--primary); }

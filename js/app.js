@@ -4,14 +4,20 @@
   const SC = window.Scoring;
   const Cloud = window.Cloud;
   const Capture = window.Capture;
+  const AI = window.AI;
   const NOTE_MAX = 2000;
   const KEY = 'gavin-study-v1';
+  const AI_KEY = 'gavin-study-ai-v1'; // AI 设置（含密钥）单独存放，不进入云同步和备份文件
   const DAY = 86400000;
   const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const FOCUS_RATE = [['😵', '很分心'], ['😕', '有点分心'], ['😐', '一般'], ['🙂', '比较专注'], ['😎', '非常专注']];
   const MASTERY_RATE = [['😣', '没学懂'], ['🤔', '有点懵'], ['😐', '一般'], ['🙂', '基本会了'], ['🤩', '完全掌握']];
 
   let state = load();
+  let ai = loadAi();
+  const aiPending = new Set();
+  const aiErrors = new Map();
+  let resultView = null;
   let currentTab = 'study';
   let statsRange = 7;
   let historyFilter = 'all';
@@ -48,6 +54,25 @@
     } catch (e) { /* 读取失败时使用默认数据 */ }
     return d;
   }
+
+  function loadAi() {
+    try {
+      return AI.normalizeConfig(JSON.parse(localStorage.getItem(AI_KEY)));
+    } catch (e) {
+      return AI.emptyConfig();
+    }
+  }
+
+  function saveAi() {
+    try {
+      localStorage.setItem(AI_KEY, JSON.stringify(ai));
+    } catch (e) {
+      toast('保存失败：浏览器存储不可用或已满');
+    }
+  }
+
+  const aiCurrent = () => Object.assign({ provider: ai.provider }, ai.configs[ai.provider]);
+  const aiReady = () => ai.enabled && !AI.validateConfig(aiCurrent());
 
   // 只写本地
   function persist() {
@@ -609,6 +634,7 @@
     markRunning();
     save();
     renderStudy();
+    if (aiReady()) runAi(session.id);
     showResult(session, true);
   }
 
@@ -638,11 +664,113 @@
     }).join('')}</div>`;
   }
 
-  function showResult(s, fresh) {
+  // ---------------- AI 评估 ----------------
+  function buildAiInput(s) {
+    const subj = getSubject(s.subject);
+    const t = SC.getType(s.type);
+    const rule = s.rule || s;
+    const m = rule.metrics || {};
+    const total = Number(s.totalMin) || 0;
+    const amount = hasAmount(s) ? s.amount : null;
+    return {
+      subject: subj.name,
+      type: t.name,
+      unit: SC.unitOf(t, subj),
+      startClock: fmtHM(s.start),
+      endClock: fmtHM(s.end),
+      totalMin: round1(total),
+      activeMin: round1(Number(s.activeMin) || 0),
+      activePct: Math.round(m.activeRatio != null ? m.activeRatio : total ? ((Number(s.activeMin) || 0) / total) * 100 : 0),
+      pauses: s.pauses || 0,
+      pausedMin: round1(s.pausedMin != null ? s.pausedMin : Math.max(0, total - (Number(s.activeMin) || 0))),
+      interruptions: s.interruptions || 0,
+      amount,
+      rate: Math.round(t.rate(subj) * 100) / 100,
+      expected: amount === null || m.expected == null ? null : Math.round(m.expected * 10) / 10,
+      pacePct: amount === null || m.pace == null ? null : Math.round(m.pace),
+      correct: amount === null || s.correct == null ? null : s.correct,
+      accuracyPct: amount === null || s.correct == null || m.accuracy == null ? null : Math.round(m.accuracy),
+      focusSelf: s.focusSelf,
+      focusSelfText: (FOCUS_RATE[s.focusSelf - 1] || [])[1] || '',
+      mastery: s.mastery,
+      masteryText: (MASTERY_RATE[s.mastery - 1] || [])[1] || '',
+      note: s.note || '',
+      ruleFocus: rule.focus,
+      ruleEffect: rule.effect,
+    };
+  }
+
+  async function runAi(id) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s || aiPending.has(id) || !aiReady()) return;
+    const cfg = aiCurrent();
+    aiPending.add(id);
+    aiErrors.delete(id);
+    refreshAiViews(id);
+    try {
+      const r = await AI.evaluate(cfg, buildAiInput(s));
+      const cur = state.sessions.find((x) => x.id === id);
+      if (!cur) return; // 评估期间记录被删除了
+      if (!cur.rule) cur.rule = { focus: cur.focus, effect: cur.effect, focusParts: cur.focusParts, effectParts: cur.effectParts, metrics: cur.metrics, tips: cur.tips };
+      cur.focus = r.focus;
+      cur.effect = r.effect;
+      if (r.tips.length) cur.tips = r.tips;
+      cur.ai = { provider: cfg.provider, model: cfg.model, focusReason: r.focusReason, effectReason: r.effectReason, at: Date.now() };
+      markSession(id);
+      save();
+    } catch (e) {
+      aiErrors.set(id, e.message || 'AI 评估失败');
+    } finally {
+      aiPending.delete(id);
+      refreshAiViews(id);
+    }
+  }
+
+  // AI 评估状态变化后，刷新正在显示的结果弹窗和列表
+  function refreshAiViews(id) {
+    const m = $('#modal');
+    if (resultView && resultView.id === id && !m.hidden) {
+      const s = state.sessions.find((x) => x.id === id);
+      if (s) showResult(s, resultView.fresh, true);
+    }
+    if (['study', 'history', 'stats'].includes(currentTab)) renderCurrent();
+  }
+
+  function aiBlock(s) {
+    if (aiPending.has(s.id)) return '<div class="ai-status live">🤖 AI 正在评估…（先显示算法评分，一般几秒钟）</div>';
+    if (s.ai) {
+      const pn = AI.getProvider(s.ai.provider).name.replace(/（.*）/, '');
+      return `<div class="ai-box">
+        <div class="ai-head">🤖 AI 点评 <small>${esc(pn)} · ${esc(s.ai.model)}</small></div>
+        ${s.ai.focusReason ? `<p><b>专注度：</b>${esc(s.ai.focusReason)}</p>` : ''}
+        ${s.ai.effectReason ? `<p><b>学习效果：</b>${esc(s.ai.effectReason)}</p>` : ''}
+        ${aiReady() ? `<button class="btn small btn-ghost" data-act="ai-eval" data-id="${esc(s.id)}">🔄 重新评估</button>` : ''}
+      </div>`;
+    }
+    if (aiErrors.has(s.id)) {
+      return `<div class="ai-status err">🤖 AI 评估失败：${esc(aiErrors.get(s.id))}。已使用算法评分。 <button class="btn small" data-act="ai-eval" data-id="${esc(s.id)}">重试</button></div>`;
+    }
+    if (aiReady()) return `<div class="ai-status"><button class="btn small" data-act="ai-eval" data-id="${esc(s.id)}">🤖 用 AI 评估这次学习</button></div>`;
+    return '';
+  }
+
+  function showResult(s, fresh, reshow) {
     const subj = getSubject(s.subject);
     const t = SC.getType(s.type);
     const unit = SC.unitOf(t, subj);
-    const m = s.metrics || {};
+    const base = s.rule || s; // AI 评估过的记录，算法评分明细在 rule 里
+    const m = base.metrics || {};
+    const sheet = $('.modal-sheet');
+    const scroll = reshow && sheet ? sheet.scrollTop : 0;
+    const parts = `
+      <h4 style="margin:8px 0">专注度构成</h4>
+      ${partsList(base.focusParts, SC.FOCUS_LABELS, 'var(--series-1)')}
+      <h4 style="margin:14px 0 8px">学习效果构成</h4>
+      ${partsList(base.effectParts, SC.EFFECT_LABELS, 'var(--series-2)')}
+      <div class="muted small" style="margin-top:10px">
+        有效时长占比 ${m.activeRatio}% · 每30分钟中断 ${m.interruptRate} 次${m.pace != null ? ` · 学习效率 ${m.pace}%（参考量 ${m.expected} ${esc(unit)}）` : ' · 没填学习量：学习效率、学习量达成两项按其他项估算'}${m.accuracy != null ? ` · 正确率 ${m.accuracy}%` : ''}
+      </div>`;
+    resultView = { id: s.id, fresh };
     openModal(`
       <h3>${fresh ? '🎉 学习完成！' : '评分详情'}</h3>
       <div class="muted small">${esc(subj.emoji)} ${esc(subj.name)} · ${t.name} · ${fmtHM(s.start)}–${fmtHM(s.end)} · 有效 ${fmtMin(s.activeMin)}${amountSuffix(s, unit)}</div>
@@ -650,18 +778,19 @@
         ${ring(s.focus, '专注度', 'var(--series-1)')}
         ${ring(s.effect, '学习效果', 'var(--series-2)')}
       </div>
-      <h4 style="margin:8px 0">专注度构成</h4>
-      ${partsList(s.focusParts, SC.FOCUS_LABELS, 'var(--series-1)')}
-      <h4 style="margin:14px 0 8px">学习效果构成</h4>
-      ${partsList(s.effectParts, SC.EFFECT_LABELS, 'var(--series-2)')}
-      <div class="muted small" style="margin-top:10px">
-        有效时长占比 ${m.activeRatio}% · 每30分钟中断 ${m.interruptRate} 次${m.pace != null ? ` · 学习效率 ${m.pace}%（参考量 ${m.expected} ${esc(unit)}）` : ' · 没填学习量：学习效率、学习量达成两项按其他项估算'}${m.accuracy != null ? ` · 正确率 ${m.accuracy}%` : ''}
-      </div>
+      <div class="muted small" style="text-align:center">评分来源：${s.ai ? 'AI 评估' : '算法'}</div>
+      ${aiBlock(s)}
+      ${s.ai ? `<details class="rule-detail"><summary>算法评分明细（参考：专注 ${base.focus} · 效果 ${base.effect}）</summary>${parts}</details>` : parts}
       <h4 style="margin:14px 0 8px">小建议</h4>
       <ul class="tips">${(s.tips || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
       <div class="form-actions"><button class="btn btn-primary" data-act="close">好的</button></div>`);
+    const nsheet = $('.modal-sheet');
+    if (reshow && nsheet) nsheet.scrollTop = scroll;
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      $$('.ring .val').forEach((c) => { c.style.strokeDashoffset = c.dataset.off; });
+      $$('.ring .val').forEach((c) => {
+        if (reshow) c.style.transition = 'none';
+        c.style.strokeDashoffset = c.dataset.off;
+      });
     }));
   }
 
@@ -969,6 +1098,7 @@
     el.innerHTML = `
       <div class="card" id="sync-card"></div>
       <div class="card" id="report-card"></div>
+      <div class="card" id="ai-card"></div>
       <div class="card">
         <h3 class="card-title">基本设置</h3>
         <div class="set-row"><label for="s-name">昵称</label><input class="input" id="s-name" maxlength="12" placeholder="同学" value="${esc(st.name)}"></div>
@@ -1084,6 +1214,109 @@
     }
     el.innerHTML = `<h3 class="card-title">☁️ 云同步 <small>多台设备共用学习记录</small></h3>${body}`;
     renderReportCard();
+  }
+
+  // ---------------- AI 评估设置 ----------------
+  let aiMsg = { text: '', tone: '' };
+  let aiModels = [];
+
+  function aiStatusLine() {
+    if (!ai.enabled) return '';
+    const bad = AI.validateConfig(aiCurrent());
+    return bad ? `⚠️ 还没配置完整：${bad}。配置好之前会用默认算法评分。` : '✅ 已就绪：每次学习结束后会自动用 AI 评分。';
+  }
+
+  function renderAiCard() {
+    const el = $('#ai-card');
+    if (!el) return;
+    const p = AI.getProvider(ai.provider);
+    const c = ai.configs[ai.provider];
+    const models = Array.from(new Set(p.models.concat(aiModels)));
+    el.innerHTML = `
+      <h3 class="card-title">🤖 AI 评估 <small>用大模型评估专注度和学习效果</small></h3>
+      <label class="switch-row">
+        <input type="checkbox" id="ai-enabled" ${ai.enabled ? 'checked' : ''}>
+        <span>每次学习结束后，让 AI 根据学习量、时长、走神情况、正确率等评分并点评（没开启或评估失败时，用默认算法评分）</span>
+      </label>
+      <div class="ai-status-line small" id="ai-status-line">${esc(aiStatusLine())}</div>
+      <div class="field" style="margin-top:12px">
+        <label for="ai-provider">大模型服务商</label>
+        <select class="input" id="ai-provider">${AI.PROVIDERS.map((x) => `<option value="${x.id}" ${x.id === ai.provider ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <label for="ai-base">接口地址</label>
+        <input class="input" id="ai-base" value="${esc(c.baseUrl)}" placeholder="https://…/v1" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="ai-model">模型名称</label>
+        <div class="row" style="flex-wrap:nowrap">
+          <input class="input" id="ai-model" list="ai-models" value="${esc(c.model)}" placeholder="${esc(p.models[0] || '模型名称')}" autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
+          <button class="btn small" type="button" data-act="ai-models">获取列表</button>
+        </div>
+        <datalist id="ai-models">${models.map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+        ${p.modelHint ? `<div class="help">${esc(p.modelHint)}</div>` : ''}
+      </div>
+      <div class="field">
+        <label for="ai-key">API 密钥</label>
+        <div class="row" style="flex-wrap:nowrap">
+          <input class="input" id="ai-key" type="password" value="${esc(c.key)}" placeholder="sk-…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
+          <button class="btn small" type="button" data-act="ai-showkey">显示</button>
+        </div>
+        <div class="help">${p.keyUrl ? `在 <a href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">服务商控制台</a> 创建密钥。` : ''}密钥只保存在这台设备的浏览器里，不会上传云端、也不在备份文件里；退出登录时会清除。</div>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary" type="button" data-act="ai-test">测试连接</button>
+        <button class="btn btn-ghost" type="button" data-act="ai-clearkey">清除密钥</button>
+        <span class="small report-msg ${aiMsg.tone}" id="ai-msg" role="status">${esc(aiMsg.text)}</span>
+      </div>
+      <p class="muted small" style="margin:10px 0 0">隐私提示：开启后，每次学习结束时，这次学习的科目、时长、学习量、自评分和你填写的学习内容会发送给所选的大模型服务商用于评分，可能产生少量接口费用。</p>`;
+  }
+
+  function setAiMsg(text, tone) {
+    aiMsg = { text, tone: tone || '' };
+    const m = $('#ai-msg');
+    if (m) {
+      m.textContent = text;
+      m.className = `small report-msg ${tone || ''}`;
+    }
+  }
+
+  function aiFieldChanged(id, value) {
+    const c = ai.configs[ai.provider];
+    if (id === 'ai-base') c.baseUrl = value.trim();
+    else if (id === 'ai-model') c.model = value.trim();
+    else c.key = value.trim();
+    saveAi();
+    const line = $('#ai-status-line');
+    if (line) line.textContent = aiStatusLine();
+  }
+
+  async function testAi(btn) {
+    if (btn) btn.disabled = true;
+    setAiMsg('正在测试…', 'live');
+    try {
+      const r = await AI.testConnection(aiCurrent());
+      setAiMsg(`✅ 连接成功（${(r.ms / 1000).toFixed(1)} 秒），模型回复：${r.reply || '（空）'}`, 'ok');
+    } catch (e) {
+      setAiMsg(e.message || '连接失败', 'err');
+    } finally {
+      if (btn && btn.isConnected) btn.disabled = false;
+    }
+  }
+
+  async function loadAiModels(btn) {
+    const bad = AI.validateConfig(aiCurrent());
+    if (bad) return setAiMsg(`请先填好：${bad}`, 'err');
+    if (btn) btn.disabled = true;
+    setAiMsg('正在获取模型列表…', 'live');
+    try {
+      aiModels = await AI.listModels(aiCurrent());
+      renderAiCard();
+      setAiMsg(`获取到 ${aiModels.length} 个模型，点一下模型名称输入框就能选择。`, 'ok');
+    } catch (e) {
+      setAiMsg(`没能获取模型列表（${e.message}）。直接手动填写模型名称也可以。`, 'err');
+      if (btn && btn.isConnected) btn.disabled = false;
+    }
   }
 
   // ---------------- 每晚学习日报 ----------------
@@ -1252,6 +1485,8 @@
     state.last = keep.last;
     form = null;
     expanded.clear();
+    ai = AI.emptyConfig(); // 退出登录时一并清除 AI 密钥，方便在公用设备上使用
+    saveAi();
     if (!$('#modal').hidden) closeModal();
     persist();
     applyTheme();
@@ -1356,6 +1591,7 @@
   }
   function closeModal() {
     stopCapture();
+    resultView = null;
     $('#modal').hidden = true;
     document.body.style.overflow = '';
   }
@@ -1373,7 +1609,7 @@
     if (currentTab === 'study') renderStudy();
     else if (currentTab === 'history') renderHistory();
     else if (currentTab === 'stats') renderStats();
-    else { renderSettings(); renderSyncCard(); }
+    else { renderSettings(); renderSyncCard(); renderAiCard(); }
   }
   function switchTab(tab) {
     currentTab = tab;
@@ -1428,6 +1664,11 @@
       case 'signout': signOut(); break;
       case 'sync-now': Cloud.syncNow(); break;
       case 'report-test': sendTestReport(btn); break;
+      case 'ai-test': testAi(btn); break;
+      case 'ai-models': loadAiModels(btn); break;
+      case 'ai-showkey': { const k = $('#ai-key'); const show = k.type === 'password'; k.type = show ? 'text' : 'password'; btn.textContent = show ? '隐藏' : '显示'; break; }
+      case 'ai-clearkey': ai.configs[ai.provider].key = ''; saveAi(); aiMsg = { text: '', tone: '' }; renderAiCard(); toast('已清除这个服务商的密钥'); break;
+      case 'ai-eval': runAi(id); break;
       case 'goto-sync': switchTab('settings'); $('#sync-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       default: break;
     }
@@ -1459,6 +1700,22 @@
       else { t.value = state.settings.goal; toast('目标需在 10–900 分钟之间'); }
       return;
     }
+    if (t.id === 'ai-enabled') {
+      ai.enabled = t.checked;
+      saveAi();
+      const line = $('#ai-status-line');
+      if (line) line.textContent = aiStatusLine();
+      toast(t.checked ? '已开启 AI 评估' : '已关闭 AI 评估，改用默认算法评分');
+      return;
+    }
+    if (t.id === 'ai-provider') {
+      ai.provider = t.value;
+      aiModels = [];
+      aiMsg = { text: '', tone: '' };
+      saveAi();
+      renderAiCard();
+      return;
+    }
     if (t.id === 's-report') {
       state.settings.reportEnabled = t.checked;
       markSettings();
@@ -1479,6 +1736,7 @@
 
   document.addEventListener('input', (e) => {
     if (e.target.closest('#auth-form')) readAuthForm();
+    if (['ai-base', 'ai-model', 'ai-key'].includes(e.target.id)) aiFieldChanged(e.target.id, e.target.value);
   });
 
   document.addEventListener('keydown', (e) => {
