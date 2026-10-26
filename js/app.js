@@ -290,54 +290,51 @@
     if (!subjects.some((s) => s.id === sub)) subjects.unshift(subjObj);
 
     return `
-    <div class="card">
+    <div class="card today-strip">
       <div class="hello">
-        <div>
-          <h2>${greet()}，${esc(name)} 👋</h2>
-          <p>${now.getMonth() + 1}月${now.getDate()}日 ${WEEK[now.getDay()]}</p>
-        </div>
-        ${streak ? `<div class="badge a">🔥 连续学习 ${streak} 天</div>` : ''}
+        <div class="hello-text"><b>${greet()}，${esc(name)} 👋</b><span>${now.getMonth() + 1}月${now.getDate()}日 ${WEEK[now.getDay()]}</span></div>
+        ${streak ? `<div class="badge a">🔥 连续 ${streak} 天</div>` : ''}
       </div>
       <div class="goal">
         <div class="goal-text"><span>今日目标 ${fmtMin(goal)}</span><span>${pct >= 100 ? '🎉 已完成' : `已完成 ${pct}%`}</span></div>
         <div class="goal-bar"><div class="goal-fill" style="width:${pct}%"></div></div>
       </div>
-      <div class="kpis">
-        <div class="kpi"><div class="kpi-label">今日学习</div><div class="kpi-value">${Math.round(mins)}<small>分钟</small></div></div>
-        <div class="kpi"><div class="kpi-label">学习次数</div><div class="kpi-value">${today.length}<small>次</small></div></div>
-        <div class="kpi"><div class="kpi-label">平均专注度</div><div class="kpi-value">${today.length ? weightedAvg(today, 'focus') : '–'}</div></div>
-        <div class="kpi"><div class="kpi-label">平均学习效果</div><div class="kpi-value">${today.length ? weightedAvg(today, 'effect') : '–'}</div></div>
-      </div>
     </div>
 
-    <div class="card">
-      <h3 class="card-title">① 选择科目 <small>可在设置中增减科目</small></h3>
+    <div class="card pick">
+      <div class="pick-label">选择科目 <small>可在设置中增减</small></div>
       <div class="subject-grid">
         ${subjects.map((s) => `
           <button class="subject-btn ${s.id === sub ? 'selected' : ''}" style="--c:${esc(s.color)}" data-act="subject" data-id="${esc(s.id)}">
             <span class="emo">${esc(s.emoji)}</span>${esc(s.name)}
           </button>`).join('')}
       </div>
-    </div>
-
-    <div class="card">
-      <h3 class="card-title">② 学习方式</h3>
+      <div class="pick-label">学习方式</div>
       <div class="type-list">
         ${SC.TYPES.map((t) => `<button class="chip ${t.id === type.id ? 'selected' : ''}" data-act="type" data-id="${t.id}">${t.icon} ${t.name}</button>`).join('')}
       </div>
       <div class="type-hint">结束时需要填写：${type.hint}（单位：${SC.unitOf(type, subjObj)}）</div>
     </div>
 
+    <div class="start-bar">
+      <div class="start-sel">
+        <b>${esc(subjObj.emoji)} ${esc(subjObj.name)}</b>
+        <span>${type.icon} ${type.name}</span>
+      </div>
+      <button class="btn btn-primary btn-lg" data-act="start">▶ 开始学习</button>
+    </div>
+
     ${Cloud.isConfigured() && !Cloud.getUser() && Cloud.getStatus().kind === 'out' ? `
     <div class="card row small">☁️ 登录后，学习记录可以在手机和电脑之间自动同步<span class="spacer"></span><button class="btn small" data-act="goto-sync">去登录</button></div>` : ''}
 
-    <div class="card start-area">
-      <button class="btn btn-primary btn-lg" data-act="start">▶ 开始学习 · ${esc(subjObj.emoji)} ${esc(subjObj.name)}</button>
-      <p>点击即以当前时间作为开始时间，结束时同样自动记录</p>
-    </div>
-
     <div class="card">
-      <h3 class="card-title">今天的学习 <small>${today.length ? `共 ${fmtMin(mins)}` : ''}</small></h3>
+      <h3 class="card-title">今天的学习</h3>
+      <div class="kpis today-kpis">
+        <div class="kpi"><div class="kpi-label">今日学习</div><div class="kpi-value">${Math.round(mins)}<small>分钟</small></div></div>
+        <div class="kpi"><div class="kpi-label">学习次数</div><div class="kpi-value">${today.length}<small>次</small></div></div>
+        <div class="kpi"><div class="kpi-label">专注度</div><div class="kpi-value">${today.length ? weightedAvg(today, 'focus') : '–'}</div></div>
+        <div class="kpi"><div class="kpi-label">学习效果</div><div class="kpi-value">${today.length ? weightedAvg(today, 'effect') : '–'}</div></div>
+      </div>
       ${today.length ? today.map(recordItem).join('') : `<div class="empty"><div class="big">🌱</div>今天还没有学习记录，开始第一段学习吧！</div>`}
     </div>`;
   }
