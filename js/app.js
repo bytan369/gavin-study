@@ -1348,6 +1348,9 @@
   function renderReportCard() {
     const el = $('#report-card');
     if (!el) return;
+    // 云端函数和定时任务部署好之后，在 js/config.js 里把 dailyReport 设为 true 才会显示这张卡片
+    el.hidden = !(window.STUDY_CONFIG && window.STUDY_CONFIG.dailyReport);
+    if (el.hidden) return;
     const u = Cloud.getUser();
     let body;
     if (!Cloud.isConfigured()) {

@@ -89,6 +89,8 @@
    - 可选 `REPORT_CC`：所有日报都抄送的邮箱，多个用逗号分隔（比如家长的邮箱）。网页上改不了这一项
 3. 部署函数 `supabase/functions/daily-report`（`supabase functions deploy daily-report --no-verify-jwt`，或用 Supabase 的 MCP 部署），再在 SQL Editor 运行 [`supabase/daily_report.sql`](supabase/daily_report.sql)。
 
+4. 全部部署好后，把 `js/config.js` 里的 `dailyReport` 改成 `true`，网页「设置」里才会出现「每晚学习日报」这张卡片（没部署好之前隐藏，避免开了开关却收不到邮件）。
+
 安全设计：
 - 日报只发到**账号自己验证过的登录邮箱**（外加你在 `REPORT_CC` 里设置的邮箱）。网页上不能填任意收件地址，避免被人拿来群发垃圾邮件。
 - 定时调用靠数据库里随机生成的密钥校验，网页端读不到；测试邮件靠用户登录令牌校验，每人每天最多 5 封。
