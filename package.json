@@ -1,0 +1,9 @@
+{
+  "name": "gavin-study",
+  "version": "1.0.0",
+  "private": true,
+  "description": "中学生学习记录与专注度评估系统",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
