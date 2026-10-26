@@ -299,7 +299,7 @@
   // ---------------- 学习页 ----------------
   function renderStudy() {
     const el = $('#tab-study');
-    el.innerHTML = state.running ? timerView() : idleView();
+    el.innerHTML = state.running ? (state.running.end ? pendingView() : timerView()) : idleView();
     updateClock();
   }
 
@@ -368,6 +368,25 @@
     </div>`;
   }
 
+  // 学习已经结束、但还没保存时（比如在填写表单时点了“返回主页”），主页上显示的卡片
+  function pendingView() {
+    const run = state.running;
+    const s = getSubject(run.subject);
+    const t = SC.getType(run.type);
+    const tm = runTimes(run);
+    return `
+    <div class="card timer-card" style="--c:${esc(s.color)}">
+      <div class="timer-subject">${esc(s.emoji)} ${esc(s.name)} <span class="type">· ${t.icon} ${t.name}</span></div>
+      <div class="timer-status off"><span class="dot"></span>学习已结束，还没保存</div>
+      <div class="timer-meta" style="margin-top:12px">${fmtHMS(run.start)} → ${fmtHMS(run.end)} · 有效学习 ${fmtMin(tm.activeMs / 60000)}</div>
+      <div class="timer-actions">
+        <button class="btn btn-lg btn-primary" data-act="open-form">✍️ 填写并保存</button>
+        <button class="btn btn-lg" data-act="back">↩ 继续计时</button>
+      </div>
+      <div style="margin-top:14px"><button class="btn btn-ghost small" data-act="discard">放弃本次记录</button></div>
+    </div>`;
+  }
+
   function timerView() {
     const run = state.running;
     const s = getSubject(run.subject);
@@ -420,8 +439,9 @@
     const tm = runTimes(run);
     const short = tm.activeMs < 60000;
     openModal(`
+      <div class="modal-head"><button type="button" class="modal-back" data-act="hide-form">← 返回主页</button></div>
       <h3>${esc(s.emoji)} ${esc(s.name)} · ${t.name}</h3>
-      <div class="muted small">学习结束，记录一下这次的成果吧</div>
+      <div class="muted small">学习结束，记录一下这次的成果吧。现在不想填，点左上角「返回主页」，稍后回来继续。</div>
       <div class="time-box">
         <div>🕐 开始 <b>${fmtHMS(run.start)}</b> → 结束 <b>${fmtHMS(run.end)}</b></div>
         <div>⏱️ 有效学习 <b>${fmtMin(tm.activeMs / 60000)}</b>${tm.pausedMs > 0 ? `，暂停 ${fmtMin(tm.pausedMs / 60000)}` : ''}</div>
@@ -464,11 +484,13 @@
           <div class="help">可以说话，也可以拍下课本、作业或笔记，文字会自动填进来，识别不准的地方请手动修改。照片只在本机识别，不会上传。</div>
         </div>
         ${form.error ? `<div class="err">${esc(form.error)}</div>` : ''}
-        <div class="form-actions">
-          <button type="button" class="btn" data-act="back">↩ 继续计时</button>
-          <button type="submit" class="btn btn-primary">保存并评分</button>
+        <div style="text-align:center;margin-top:4px"><button type="button" class="btn btn-ghost small" data-act="discard">放弃本次记录</button></div>
+        <div class="sticky-actions">
+          <div class="form-actions">
+            <button type="button" class="btn" data-act="back">↩ 继续计时</button>
+            <button type="submit" class="btn btn-primary">保存并评分</button>
+          </div>
         </div>
-        <div style="text-align:center;margin-top:8px"><button type="button" class="btn btn-ghost small" data-act="discard">放弃本次记录</button></div>
       </form>`);
     renderCaptureUI();
   }
@@ -772,6 +794,7 @@
       </div>`;
     resultView = { id: s.id, fresh };
     openModal(`
+      <div class="modal-head"><button type="button" class="modal-back" data-act="close">← 返回主页</button></div>
       <h3>${fresh ? '🎉 学习完成！' : '评分详情'}</h3>
       <div class="muted small">${esc(subj.emoji)} ${esc(subj.name)} · ${t.name} · ${fmtHM(s.start)}–${fmtHM(s.end)} · 有效 ${fmtMin(s.activeMin)}${amountSuffix(s, unit)}</div>
       <div class="score-rings">
@@ -783,7 +806,7 @@
       ${s.ai ? `<details class="rule-detail"><summary>算法评分明细（参考：专注 ${base.focus} · 效果 ${base.effect}）</summary>${parts}</details>` : parts}
       <h4 style="margin:14px 0 8px">小建议</h4>
       <ul class="tips">${(s.tips || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
-      <div class="form-actions"><button class="btn btn-primary" data-act="close">好的</button></div>`);
+      <div class="sticky-actions"><div class="form-actions"><button class="btn btn-primary" data-act="close">好的</button></div></div>`);
     const nsheet = $('.modal-sheet');
     if (reshow && nsheet) nsheet.scrollTop = scroll;
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -1583,11 +1606,34 @@
   }
 
   // ---------------- 弹窗 / 提示 ----------------
+  // 手机浏览器的 100vh 包含了地址栏、工具栏和键盘占的位置，弹窗按“实际可见区域”来定位和定高
+  function fitModal() {
+    const m = $('#modal');
+    if (!m || m.hidden) return;
+    const vv = window.visualViewport;
+    m.style.top = `${vv ? vv.offsetTop : 0}px`;
+    m.style.height = `${vv ? vv.height : window.innerHeight}px`;
+  }
+
   function openModal(html) {
     const m = $('#modal');
     $('.modal-sheet', m).innerHTML = html;
     m.hidden = false;
+    fitModal();
     document.body.style.overflow = 'hidden';
+  }
+
+  // 填写结束表单时点“返回主页”：内容先留着，回到主页，随时可以回来继续
+  function hideForm() {
+    readFormInputs();
+    closeModal();
+    renderStudy();
+    toast('已回到主页。这次学习还没保存，点「填写并保存」继续');
+  }
+
+  function dismissModal() {
+    if ($('#finish-form')) hideForm();
+    else closeModal();
   }
   function closeModal() {
     stopCapture();
@@ -1623,11 +1669,7 @@
   document.addEventListener('click', (e) => {
     const tabBtn = e.target.closest('.tab');
     if (tabBtn) return switchTab(tabBtn.dataset.tab);
-    if (e.target.classList.contains('modal-backdrop')) {
-      // 填写结束表单时不允许点背景关闭，避免误操作丢失
-      if (!state.running || !state.running.end) closeModal();
-      return;
-    }
+    if (e.target.classList.contains('modal-backdrop')) return dismissModal();
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act;
@@ -1640,6 +1682,8 @@
       case 'end': endStudy(); break;
       case 'discard': discardStudy(); break;
       case 'back': resumeFromForm(); break;
+      case 'hide-form': hideForm(); break;
+      case 'open-form': openFinishForm(); break;
       case 'voice': toggleVoice(); break;
       case 'photo': if (!cap.busy) $('#photo-input').click(); break;
       case 'rate': readFormInputs(); form[btn.dataset.field] = Number(btn.dataset.v); renderFinishForm(); break;
@@ -1741,7 +1785,20 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.id === 'new-subj') addSubject();
-    if (e.key === 'Escape' && !$('#modal').hidden && !(state.running && state.running.end)) closeModal();
+    if (e.key === 'Escape' && !$('#modal').hidden) dismissModal();
+  });
+
+  // 键盘弹出、地址栏伸缩时，弹窗跟着可见区域变化；输入框获得焦点时滚到可见位置
+  window.addEventListener('resize', fitModal);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fitModal);
+    window.visualViewport.addEventListener('scroll', fitModal);
+  }
+  document.addEventListener('focusin', (e) => {
+    const t = e.target;
+    if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName) && t.closest && t.closest('.modal-sheet')) {
+      setTimeout(() => t.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);
+    }
   });
 
   document.addEventListener('pointermove', onChartHover);
