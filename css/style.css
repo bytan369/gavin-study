@@ -509,3 +509,8 @@ details.rule-detail summary { cursor: pointer; color: var(--text-2); font-size: 
   .start-btns { flex: 1 1 100%; }
   .start-btns .btn-lg { flex: 1; padding: 13px 10px; }
 }
+
+.model-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.model-chips .chip { font-size: 12px; padding: 4px 10px; }
+.model-chips .chip small { color: var(--muted); margin-left: 2px; }
+.model-chips .chip.selected small { color: inherit; }

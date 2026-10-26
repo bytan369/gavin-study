@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const AI = require('../js/ai.js');
 
-const cfg = { baseUrl: 'https://api.deepseek.com/', model: 'deepseek-chat', key: 'sk-test123' };
+const cfg = { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/', model: 'deepseek-flash', key: 'sk-test123' };
 const input = {
   subject: '数学', type: '做题练习', unit: '题', startClock: '19:03', endClock: '19:48', totalMin: 45, activeMin: 40, activePct: 89,
   pauses: 1, pausedMin: 5, interruptions: 1, amount: 12, rate: 0.35, expected: 14, pacePct: 86, correct: 10, accuracyPct: 83,
@@ -11,11 +11,44 @@ const input = {
 const okBody = (content) => JSON.stringify({ choices: [{ message: { content } }] });
 const reply = (status, body) => async () => ({ ok: status >= 200 && status < 300, status, text: async () => body });
 
-test('服务商列表：覆盖 DeepSeek、通义千问、MiniMax，并有自定义项', () => {
+test('服务商列表：最新模型，有免费选项，不含浏览器调不通的服务商', () => {
   const ids = AI.PROVIDERS.map((p) => p.id);
-  for (const id of ['deepseek', 'qwen', 'minimax', 'kimi', 'hunyuan', 'doubao', 'custom']) assert.ok(ids.includes(id), id);
-  assert.ok(!ids.includes('zhipu'), '智谱的接口不允许浏览器直接调用，不应出现在预设里');
-  for (const p of AI.PROVIDERS.filter((x) => x.id !== 'custom')) assert.match(p.baseUrl, /^https:\/\//);
+  assert.deepStrictEqual(ids, ['deepseek', 'qwen', 'siliconflow', 'minimax', 'kimi', 'custom']);
+  for (const id of ['zhipu', 'hunyuan', 'doubao', 'spark', 'qianfan']) assert.ok(!ids.includes(id), `${id} 的接口会被浏览器拦截，不应出现在预设里`);
+  const def = Object.fromEntries(AI.PROVIDERS.map((p) => [p.id, p.model]));
+  assert.deepStrictEqual(def, { deepseek: 'deepseek-flash', qwen: 'qwen3.8-flash', siliconflow: 'Qwen/Qwen3-8B', minimax: 'MiniMax-M3.1-Flash', kimi: 'kimi-k3', custom: '' });
+  for (const p of AI.PROVIDERS.filter((x) => x.id !== 'custom')) {
+    assert.match(p.baseUrl, /^https:\/\//);
+    assert.ok(p.models.some((m) => m.id === p.model), `${p.id} 的默认模型要在列表里`);
+  }
+  const sf = AI.getProvider('siliconflow');
+  assert.ok(sf.models.filter((m) => /免费/.test(m.tag)).length >= 2, '硅基流动至少列出两个免费模型');
+});
+
+test('旧的默认模型和已下线的模型自动换成新模型；用户自己改过的模型不动', () => {
+  const c = AI.normalizeConfig({ provider: 'deepseek', configs: {
+    deepseek: { model: 'deepseek-chat', key: 'k' }, qwen: { model: 'qwen-plus' }, minimax: { model: 'MiniMax-M2', baseUrl: 'https://api.minimaxi.com/v1' },
+    kimi: { model: 'moonshot-v1-8k' },
+  } });
+  assert.strictEqual(c.configs.deepseek.model, 'deepseek-flash');
+  assert.strictEqual(c.configs.deepseek.key, 'k');
+  assert.strictEqual(c.configs.qwen.model, 'qwen3.8-flash');
+  assert.strictEqual(c.configs.minimax.model, 'MiniMax-M3.1-Flash');
+  assert.strictEqual(c.configs.minimax.baseUrl, 'https://api.minimax.cn/v1');
+  assert.strictEqual(c.configs.kimi.model, 'kimi-k3');
+  assert.strictEqual(AI.normalizeConfig({ configs: { deepseek: { model: 'deepseek-v4-pro' } } }).configs.deepseek.model, 'deepseek-v4-pro');
+  // 以前选了已移除的服务商（混元、豆包）：退回默认服务商，不报错
+  assert.strictEqual(AI.normalizeConfig({ provider: 'hunyuan', configs: { hunyuan: { key: 'x' } } }).provider, 'deepseek');
+});
+
+test('各服务商的附加参数：关闭思考模式', () => {
+  assert.deepStrictEqual(AI.extraBody({ provider: 'deepseek', model: 'deepseek-flash' }), { thinking: { type: 'disabled' } });
+  assert.deepStrictEqual(AI.extraBody({ provider: 'qwen', model: 'qwen3.8-flash' }), { enable_thinking: false });
+  assert.deepStrictEqual(AI.extraBody({ provider: 'siliconflow', model: 'Qwen/Qwen3-8B' }), { enable_thinking: false });
+  assert.deepStrictEqual(AI.extraBody({ provider: 'siliconflow', model: 'THUDM/GLM-4-9B-0414' }), {});
+  assert.deepStrictEqual(AI.extraBody({ provider: 'kimi', model: 'kimi-k3' }), {});
+  assert.deepStrictEqual(AI.extraBody({ provider: 'custom', model: 'x' }), {});
+  assert.deepStrictEqual(AI.extraBody({ model: 'x' }), {});
 });
 
 test('配置校验', () => {
@@ -86,7 +119,9 @@ test('评估：请求地址、请求头、请求体正确，结果被解析', as
   assert.strictEqual(seen.init.method, 'POST');
   assert.strictEqual(seen.init.headers.Authorization, 'Bearer sk-test123');
   const body = JSON.parse(seen.init.body);
-  assert.strictEqual(body.model, 'deepseek-chat');
+  assert.strictEqual(body.model, 'deepseek-flash');
+  assert.deepStrictEqual(body.thinking, { type: 'disabled' }, 'DeepSeek 关闭思考模式');
+  assert.strictEqual(body.max_tokens, 4096);
   assert.strictEqual(body.stream, false);
   assert.ok(!seen.init.body.includes('sk-test123'), '密钥只能放在请求头里，不能进请求体');
   assert.ok(body.messages[1].content.includes('二次函数第3节'));
