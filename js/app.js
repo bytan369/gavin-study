@@ -174,6 +174,10 @@
     return n;
   }
 
+  // 学习量没填（null）时不显示数量；兼容旧记录
+  const hasAmount = (s) => s.amount !== null && s.amount !== undefined;
+  const amountSuffix = (s, unit) => (hasAmount(s) ? ` · ${s.amount} ${esc(unit)}` : '');
+
   function badge(score, label) {
     return `<span class="badge ${SC.level(score).key}">${label} ${score}</span>`;
   }
@@ -400,9 +404,9 @@
       </div>
       <form id="finish-form" novalidate>
         <div class="field">
-          <label for="f-amount">学习量</label>
-          <div class="input-unit"><input class="input" id="f-amount" name="amount" type="number" inputmode="numeric" min="0" step="1" placeholder="0" value="${esc(form.amount)}"><span>${esc(unit)}</span></div>
-          <div class="help">${t.hint}</div>
+          <label for="f-amount">学习量 <span class="muted small">（选填）</span></label>
+          <div class="input-unit"><input class="input" id="f-amount" name="amount" type="number" inputmode="numeric" min="0" step="1" placeholder="不填也可以" value="${esc(form.amount)}"><span>${esc(unit)}</span></div>
+          <div class="help">${t.hint}。不填的话，学习效率和学习量按其他项估算，评分没那么准。</div>
         </div>
         ${t.correct ? `
         <div class="field">
@@ -551,11 +555,13 @@
     readFormInputs();
     const run = state.running;
     const t = SC.getType(run.type);
-    const amount = form.amount === '' ? NaN : Number(form.amount);
+    // 学习量选填：没填 = null，不按学习量评分
+    const amount = form.amount === '' ? null : Number(form.amount);
     const correct = form.correct === '' ? null : Number(form.correct);
     let error = '';
-    if (!Number.isFinite(amount) || amount < 0) error = '请填写学习量（没有可填 0）';
-    else if (t.correct === 'required' && amount > 0 && correct === null) error = '请填写做对的题数';
+    if (amount !== null && (!Number.isFinite(amount) || amount < 0)) error = '学习量要填 0 或更大的数字，不想填可以留空';
+    else if (amount === null && correct !== null) error = '填了做对的题数，请同时填写完成的题数；都不想填就都留空';
+    else if (t.correct === 'required' && amount > 0 && correct === null) error = '请填写做对的题数（不想填学习量的话，两项都留空）';
     else if (correct !== null && (!Number.isFinite(correct) || correct < 0 || correct > amount)) error = '做对的题数应在 0 到总题数之间';
     if (error) {
       form.error = error;
@@ -639,7 +645,7 @@
     const m = s.metrics || {};
     openModal(`
       <h3>${fresh ? '🎉 学习完成！' : '评分详情'}</h3>
-      <div class="muted small">${esc(subj.emoji)} ${esc(subj.name)} · ${t.name} · ${fmtHM(s.start)}–${fmtHM(s.end)} · 有效 ${fmtMin(s.activeMin)} · ${s.amount} ${esc(unit)}</div>
+      <div class="muted small">${esc(subj.emoji)} ${esc(subj.name)} · ${t.name} · ${fmtHM(s.start)}–${fmtHM(s.end)} · 有效 ${fmtMin(s.activeMin)}${amountSuffix(s, unit)}</div>
       <div class="score-rings">
         ${ring(s.focus, '专注度', 'var(--series-1)')}
         ${ring(s.effect, '学习效果', 'var(--series-2)')}
@@ -649,7 +655,7 @@
       <h4 style="margin:14px 0 8px">学习效果构成</h4>
       ${partsList(s.effectParts, SC.EFFECT_LABELS, 'var(--series-2)')}
       <div class="muted small" style="margin-top:10px">
-        有效时长占比 ${m.activeRatio}% · 每30分钟中断 ${m.interruptRate} 次 · 学习效率 ${m.pace}%（参考量 ${m.expected} ${esc(unit)}）${m.accuracy != null ? ` · 正确率 ${m.accuracy}%` : ''}
+        有效时长占比 ${m.activeRatio}% · 每30分钟中断 ${m.interruptRate} 次${m.pace != null ? ` · 学习效率 ${m.pace}%（参考量 ${m.expected} ${esc(unit)}）` : ' · 没填学习量：学习效率、学习量达成两项按其他项估算'}${m.accuracy != null ? ` · 正确率 ${m.accuracy}%` : ''}
       </div>
       <h4 style="margin:14px 0 8px">小建议</h4>
       <ul class="tips">${(s.tips || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
@@ -670,7 +676,7 @@
         <div class="rec-icon" style="--c:${esc(subj.color)}">${esc(subj.emoji)}</div>
         <div class="rec-body">
           <div class="rec-title">${esc(subj.name)}<span class="type">${t.icon} ${t.name}</span></div>
-          <div class="rec-sub">${fmtHM(s.start)}–${fmtHM(s.end)} · ${fmtMin(s.activeMin)} · ${s.amount} ${esc(unit)}</div>
+          <div class="rec-sub">${fmtHM(s.start)}–${fmtHM(s.end)} · ${fmtMin(s.activeMin)}${amountSuffix(s, unit)}</div>
         </div>
         <div class="rec-scores">${badge(s.focus, '专注')}${badge(s.effect, '效果')}</div>
       </button>
@@ -680,8 +686,8 @@
           <span>⏱️ 总时长 ${fmtMin(s.totalMin)}</span>
           <span>✅ 有效学习 ${fmtMin(s.activeMin)}</span>
           <span>⏸ 暂停 ${s.pauses} 次</span>
-          <span>📦 学习量 ${s.amount} ${esc(unit)}</span>
-          ${s.correct != null ? `<span>🎯 正确率 ${s.amount ? Math.round((s.correct / s.amount) * 100) : 0}%（${s.correct}/${s.amount}）</span>` : ''}
+          <span>📦 学习量 ${hasAmount(s) ? `${s.amount} ${esc(unit)}` : '没填'}</span>
+          ${s.correct != null && hasAmount(s) ? `<span>🎯 正确率 ${s.amount ? Math.round((s.correct / s.amount) * 100) : 0}%（${s.correct}/${s.amount}）</span>` : ''}
           <span>💭 走神/中断 ${s.interruptions} 次</span>
           <span>🙂 自评专注 ${s.focusSelf}/5</span>
           <span>📘 掌握程度 ${s.mastery}/5</span>
@@ -1006,7 +1012,7 @@
       <div class="card rules">
         <h3 class="card-title">评分规则说明</h3>
         <p>每次学习结束后，系统根据<b>有效学习时长</b>、<b>暂停/走神次数</b>和<b>学习量</b>自动计算两个分数（满分均为 100）。
-        「学习效率」= 学习量 ÷ 参考量，参考量 = 有效分钟数 × 该科目该学习方式的参考速度（例如数学做题约 0.35 题/分钟，英语做题约 0.8 题/分钟，阅读约 0.8 页/分钟），达到参考量的 90% 即得满分。</p>
+        「学习效率」= 学习量 ÷ 参考量，参考量 = 有效分钟数 × 该科目该学习方式的参考速度（例如数学做题约 0.35 题/分钟，英语做题约 0.8 题/分钟，阅读约 0.8 页/分钟），达到参考量的 90% 即得满分。学习量是选填的：没填时，「学习效率」和「学习量达成」这两项会按其他项的得分比例估算，不会因为没填而被扣分。</p>
         <h4>专注度</h4>
         <ul>
           <li>有效时长占比（35 分）：有效学习时间 ÷ 总时间，≥95% 满分，≤50% 不得分</li>
