@@ -3,6 +3,8 @@
 
   const SC = window.Scoring;
   const Cloud = window.Cloud;
+  const Capture = window.Capture;
+  const NOTE_MAX = 2000;
   const KEY = 'gavin-study-v1';
   const DAY = 86400000;
   const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -15,6 +17,7 @@
   let historyFilter = 'all';
   const expanded = new Set();
   let form = null;
+  let cap = { listening: false, busy: false, interim: '', progress: '', msg: '', tone: '' };
   let authDraft = { email: '', password: '' };
   let lastUid = null;
 
@@ -367,7 +370,11 @@
     const run = state.running;
     if (!run || !run.end) return;
     if (!form) {
-      form = { amount: '', correct: '', interruptions: run.pauses.length, focusSelf: 4, mastery: 3, note: '', error: '' };
+      form = {
+        amount: '', correct: '', interruptions: run.pauses.length, focusSelf: 4, mastery: 3, note: '', error: '',
+        voiceLang: Capture.voiceLangFor(run.subject),
+      };
+      cap = { listening: false, busy: false, interim: '', progress: '', msg: '', tone: '' };
     }
     renderFinishForm();
   }
@@ -418,7 +425,17 @@
         <div class="field"><div class="label">内容掌握程度</div>${rateButtons('mastery', MASTERY_RATE)}</div>
         <div class="field">
           <label for="f-note">学习内容 / 心得 <span class="muted small">（选填）</span></label>
-          <textarea class="input" id="f-note" name="note" maxlength="500" placeholder="例如：二次函数第3节练习，顶点式还不太熟">${esc(form.note)}</textarea>
+          <div class="capture-bar">
+            <button type="button" class="btn small" id="btn-voice" data-act="voice">🎤 语音输入</button>
+            <select class="input" id="voice-lang" aria-label="语音语言">
+              ${[['zh-CN', '普通话'], ['en-US', 'English'], ['zh-HK', '粤语']].map(([v, n]) => `<option value="${v}" ${form.voiceLang === v ? 'selected' : ''}>${n}</option>`).join('')}
+            </select>
+            <button type="button" class="btn small" id="btn-photo" data-act="photo">📷 拍照识别</button>
+            <input type="file" id="photo-input" accept="image/*" hidden>
+          </div>
+          <div class="capture-status" id="capture-status" role="status" aria-live="polite"></div>
+          <textarea class="input" id="f-note" name="note" maxlength="${NOTE_MAX}" placeholder="例如：二次函数第3节练习，顶点式还不太熟">${esc(form.note)}</textarea>
+          <div class="help">可以说话，也可以拍下课本、作业或笔记，文字会自动填进来，识别不准的地方请手动修改。照片只在本机识别，不会上传。</div>
         </div>
         ${form.error ? `<div class="err">${esc(form.error)}</div>` : ''}
         <div class="form-actions">
@@ -427,6 +444,102 @@
         </div>
         <div style="text-align:center;margin-top:8px"><button type="button" class="btn btn-ghost small" data-act="discard">放弃本次记录</button></div>
       </form>`);
+    renderCaptureUI();
+  }
+
+  // ---------------- 语音 / 拍照录入学习内容 ----------------
+  function setCap(msg, tone) {
+    cap.msg = msg || '';
+    cap.tone = tone || '';
+    renderCaptureUI();
+  }
+
+  function renderCaptureUI() {
+    const status = $('#capture-status');
+    const vBtn = $('#btn-voice');
+    const pBtn = $('#btn-photo');
+    if (!status || !vBtn || !pBtn) return;
+    vBtn.textContent = cap.listening ? '⏹ 停止' : '🎤 语音输入';
+    vBtn.classList.toggle('btn-danger', cap.listening);
+    vBtn.disabled = cap.busy;
+    pBtn.disabled = cap.busy || cap.listening;
+    pBtn.textContent = cap.busy ? '⏳ 识别中…' : '📷 拍照识别';
+    let text = cap.msg;
+    let tone = cap.tone;
+    if (cap.listening) {
+      text = `🎤 正在听，请说话…${cap.interim ? ` ${cap.interim}` : ''}`;
+      tone = 'live';
+    } else if (cap.busy) {
+      text = `⏳ ${cap.progress}`;
+      tone = 'live';
+    }
+    status.textContent = text;
+    status.className = `capture-status ${tone}`;
+  }
+
+  // 把识别结果加到备注里；先读取输入框，避免覆盖用户手动输入的内容
+  function addNote(text, kind, myForm) {
+    if (form !== myForm) return;
+    readFormInputs();
+    const next = kind === 'speech' ? Capture.appendSpeech(form.note, text, form.voiceLang) : Capture.appendBlock(form.note, text);
+    const fit = Capture.fitText(next, NOTE_MAX);
+    form.note = fit.text;
+    const ta = $('#f-note');
+    if (ta) ta.value = fit.text;
+    if (fit.truncated) setCap(`内容太长，已保留前 ${NOTE_MAX} 个字。`, 'err');
+    return fit.truncated;
+  }
+
+  function stopCapture() {
+    if (Capture.voice.isListening()) Capture.voice.stop();
+    cap.listening = false;
+    cap.interim = '';
+    renderCaptureUI();
+  }
+
+  function toggleVoice() {
+    if (cap.listening) return Capture.voice.stop();
+    if (!Capture.voice.supported()) return setCap(Capture.describeVoiceError('unsupported'), 'err');
+    readFormInputs();
+    const myForm = form;
+    cap.msg = '';
+    Capture.voice.start({
+      lang: form.voiceLang,
+      onState: (on) => { cap.listening = on; if (!on) cap.interim = ''; renderCaptureUI(); },
+      onInterim: (t) => { cap.interim = t; renderCaptureUI(); },
+      onText: (t) => addNote(t, 'speech', myForm),
+      onError: (code) => setCap(Capture.describeVoiceError(code), 'err'),
+    });
+  }
+
+  async function recognizePhoto(file) {
+    if (!file || cap.busy) return;
+    readFormInputs();
+    const myForm = form;
+    cap.busy = true;
+    cap.msg = '';
+    cap.progress = '正在处理照片…';
+    renderCaptureUI();
+    try {
+      const { text } = await Capture.ocr.recognize(file, (p) => {
+        if (form !== myForm) return;
+        cap.progress = p.text;
+        renderCaptureUI();
+      });
+      if (form !== myForm) return;
+      const clean = Capture.cleanOcrText(text);
+      if (!clean) {
+        setCap('没有识别到文字。请把文字拍清楚：光线充足、正对着拍、不要拍太远，再试一次。', 'err');
+        return;
+      }
+      const truncated = addNote(clean, 'block', myForm);
+      if (!truncated) setCap(`已识别 ${clean.length} 个字并填入下方，请检查、修改不准的地方。`, 'ok');
+    } catch (e) {
+      if (form === myForm) setCap(Capture.describeOcrError(e), 'err');
+    } finally {
+      cap.busy = false;
+      renderCaptureUI();
+    }
   }
 
   function readFormInputs() {
@@ -485,6 +598,7 @@
       metrics: result.metrics,
       tips: result.tips,
     };
+    stopCapture();
     state.sessions.push(session);
     state.running = null;
     form = null;
@@ -1183,6 +1297,7 @@
     document.body.style.overflow = 'hidden';
   }
   function closeModal() {
+    stopCapture();
     $('#modal').hidden = true;
     document.body.style.overflow = '';
   }
@@ -1231,6 +1346,8 @@
       case 'end': endStudy(); break;
       case 'discard': discardStudy(); break;
       case 'back': resumeFromForm(); break;
+      case 'voice': toggleVoice(); break;
+      case 'photo': if (!cap.busy) $('#photo-input').click(); break;
       case 'rate': readFormInputs(); form[btn.dataset.field] = Number(btn.dataset.v); renderFinishForm(); break;
       case 'step': {
         readFormInputs();
@@ -1272,6 +1389,8 @@
 
   document.addEventListener('change', (e) => {
     const t = e.target;
+    if (t.id === 'photo-input') { const f = t.files[0]; t.value = ''; recognizePhoto(f); return; }
+    if (t.id === 'voice-lang') { form.voiceLang = t.value; if (cap.listening) Capture.voice.stop(); return; }
     if (t.id === 'history-filter') { historyFilter = t.value; renderHistory(); return; }
     if (t.id === 'import-file' && t.files[0]) { importData(t.files[0]); t.value = ''; return; }
     if (t.id === 's-name') { state.settings.name = t.value.trim(); markSettings(); save(); toast('昵称已保存'); return; }
