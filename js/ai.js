@@ -116,6 +116,7 @@
     const lines = [
       `科目：${input.subject}`,
       `学习方式：${input.type}${input.unit ? `（学习量单位：${input.unit}）` : ''}`,
+      ...(input.scopeText ? [`类别：${input.scopeText}`] : []),
       `时间：${input.startClock}–${input.endClock}，总时长 ${input.totalMin} 分钟，有效学习 ${input.activeMin} 分钟（有效占比 ${input.activePct}%）`,
       `暂停 ${input.pauses} 次（共 ${input.pausedMin} 分钟），学生自报走神/被打断 ${input.interruptions} 次`,
     ];

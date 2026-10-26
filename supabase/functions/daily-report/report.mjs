@@ -73,6 +73,14 @@ const weighted = (list, field) => {
   return Math.round(list.reduce((a, s) => a + (+s[field] || 0) * Math.max(+s.activeMin || 0, 1), 0) / w);
 };
 
+const scopeLabel = (s) => (s && s.scope === 'in' ? '课内' : s && s.scope === 'out' ? '课外' : '');
+
+export function scopeMinutes(items) {
+  const r = { in: 0, out: 0, none: 0 };
+  for (const s of items) r[s.scope === 'in' ? 'in' : s.scope === 'out' ? 'out' : 'none'] += +s.activeMin || 0;
+  return r;
+}
+
 export function summarize(items, custom = []) {
   const bySubject = {};
   for (const s of items) (bySubject[s.subject] = bySubject[s.subject] || []).push(s);
@@ -84,6 +92,7 @@ export function summarize(items, custom = []) {
   return {
     count: items.length,
     totalMin: items.reduce((a, s) => a + (+s.activeMin || 0), 0),
+    scopes: scopeMinutes(items),
     focus: weighted(items, 'focus'),
     effect: weighted(items, 'effect'),
     subjects,
@@ -100,7 +109,7 @@ function itemLine(s, custom) {
   const sub = subjectOf(s.subject, custom);
   const t = typeOf(s.type, s.subject);
   const amount = s.amount === null || s.amount === undefined ? '' : `，${s.amount}${t.unit}`;
-  return { sub, t, amount, time: `${fmtClock(s.start)}–${fmtClock(s.end)}`, note: clip(s.note) };
+  return { sub, t, amount, scope: scopeLabel(s), time: `${fmtClock(s.start)}–${fmtClock(s.end)}`, note: clip(s.note) };
 }
 
 // 生成邮件。name：昵称；goalMin：每日目标（分钟）
@@ -118,12 +127,13 @@ export function renderEmail({ name, range, items, custom = [], goalMin = 0 }) {
     lines.push('今天没有学习记录。');
   } else {
     lines.push(`总学习时间：${fmtMin(sum.totalMin)}（${sum.count} 次）${pct !== null ? `，目标完成 ${pct}%` : ''}`);
-    lines.push(`平均专注度：${sum.focus} 分　平均学习效果：${sum.effect} 分`, '', '各科：');
+    lines.push(`平均专注度：${sum.focus} 分　平均学习效果：${sum.effect} 分`);
+    lines.push(`课内：${fmtMin(sum.scopes.in)}　课外：${fmtMin(sum.scopes.out)}${sum.scopes.none > 0 ? `　未标记：${fmtMin(sum.scopes.none)}` : ''}`, '', '各科：');
     for (const s of sum.subjects) lines.push(`  ${s.emoji} ${s.name}　${fmtMin(s.min)}（${s.count} 次）　专注 ${s.focus} · 效果 ${s.effect}`);
     lines.push('', '明细：');
     for (const s of items) {
       const l = itemLine(s, custom);
-      lines.push(`  ${l.time}　${l.sub.name} · ${l.t.name}　${fmtMin(s.activeMin)}${l.amount}　专注 ${s.focus} · 效果 ${s.effect}`);
+      lines.push(`  ${l.time}　${l.sub.name}${l.scope ? `（${l.scope}）` : ''} · ${l.t.name}　${fmtMin(s.activeMin)}${l.amount}　专注 ${s.focus} · 效果 ${s.effect}`);
       if (l.note) lines.push(`      内容：${l.note.replace(/\n/g, ' / ')}`);
     }
   }
@@ -141,6 +151,7 @@ export function renderEmail({ name, range, items, custom = [], goalMin = 0 }) {
       <table role="presentation" style="width:100%;border-collapse:separate;margin:14px 0"><tr>
         ${stat('总学习时间', esc(fmtMin(sum.totalMin)))}${stat('学习次数', `${sum.count} 次`)}${stat('平均专注度', sum.focus)}${stat('平均学习效果', sum.effect)}
       </tr></table>
+      <p style="margin:0 0 6px;color:#52606d;font-size:13px">课内 <b>${esc(fmtMin(sum.scopes.in))}</b> · 课外 <b>${esc(fmtMin(sum.scopes.out))}</b>${sum.scopes.none > 0 ? ` · 未标记 <b>${esc(fmtMin(sum.scopes.none))}</b>` : ''}</p>
       ${pct !== null ? `<p style="margin:0 0 14px;color:#52606d;font-size:13px">今日目标 ${esc(fmtMin(goalMin))}，完成 <b>${pct}%</b></p>` : ''}
       <h3 style="margin:16px 0 6px;font-size:14px;color:#1f2933">各科</h3>
       <table style="width:100%;border-collapse:collapse">${sum.subjects.map((s) => `<tr><td style="${td}">${esc(s.emoji)} ${esc(s.name)}</td><td style="${td}text-align:right">${esc(fmtMin(s.min))}（${s.count} 次）</td><td style="${td}text-align:right;color:#52606d">专注 ${s.focus} · 效果 ${s.effect}</td></tr>`).join('')}</table>
@@ -148,7 +159,7 @@ export function renderEmail({ name, range, items, custom = [], goalMin = 0 }) {
       ${items.map((s) => {
         const l = itemLine(s, custom);
         return `<div style="padding:10px 0;border-bottom:1px solid #eef1f5">
-          <div style="font-size:14px;color:#1f2933"><b>${esc(l.sub.emoji)} ${esc(l.sub.name)}</b> · ${esc(l.t.name)} <span style="color:#8a96a3;font-size:12px">${l.time}</span></div>
+          <div style="font-size:14px;color:#1f2933"><b>${esc(l.sub.emoji)} ${esc(l.sub.name)}</b>${l.scope ? ` <span style="font-size:11px;background:#eef1f5;border-radius:99px;padding:1px 8px;color:#52606d">${l.scope}</span>` : ''} · ${esc(l.t.name)} <span style="color:#8a96a3;font-size:12px">${l.time}</span></div>
           <div style="font-size:12px;color:#52606d;margin-top:2px">有效 ${esc(fmtMin(s.activeMin))}${esc(l.amount)} · 专注 ${s.focus} · 效果 ${s.effect}</div>
           ${l.note ? `<div style="font-size:13px;color:#1f2933;background:#f8fafc;border-radius:8px;padding:6px 10px;margin-top:6px;white-space:pre-wrap">${esc(l.note)}</div>` : ''}
         </div>`;

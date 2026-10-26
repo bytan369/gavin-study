@@ -73,14 +73,18 @@ test('邮件内容：有记录', async () => {
   const [R] = await load();
   const range = R.dayRange(NIGHT);
   const items = [
-    sess('a', range.start + 3600e3 * 10, { note: '复习二次函数\n错题没整理', amount: 12 }),
-    sess('b', range.start + 3600e3 * 12, { subject: 'english', type: 'writing', amount: 80, activeMin: 20, focus: 70, effect: 60 }),
+    sess('a', range.start + 3600e3 * 10, { note: '复习二次函数\n错题没整理', amount: 12, scope: 'in' }),
+    sess('b', range.start + 3600e3 * 12, { subject: 'english', type: 'writing', amount: 80, activeMin: 20, focus: 70, effect: 60, scope: 'out' }),
     sess('c', range.start + 3600e3 * 14, { amount: null, type: 'reading' }),
   ];
   const m = R.renderEmail({ name: 'Gavin', range, items, goalMin: 120 });
   assert.match(m.subject, /Gavin 10月26日学习日报：共1小时20分/);
   assert.match(m.text, /总学习时间：1小时20分（3 次），目标完成 67%/);
   assert.match(m.text, /80词/); // 英语写作按“词”计
+  assert.match(m.text, /课内：30分钟　课外：20分钟　未标记：30分钟/);
+  assert.match(m.text, /数学（课内） · 做题练习/);
+  assert.match(m.text, /英语（课外） · 写作\/练笔/);
+  assert.match(m.html, />课内</);
   assert.match(m.text, /内容：复习二次函数 \/ 错题没整理/);
   assert.match(m.html, /Gavin 的学习日报/);
   assert.ok(!/undefined|NaN|null/.test(m.text + m.html), '不应出现 undefined/NaN/null');
