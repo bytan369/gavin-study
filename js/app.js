@@ -467,9 +467,11 @@
     const tm = runTimes(run);
     const short = tm.activeMs < 60000;
     openModal(`
-      <div class="modal-head"><button type="button" class="modal-back" data-act="hide-form">← 返回主页</button></div>
-      <h3>${esc(s.emoji)} ${esc(s.name)} · ${t.name}</h3>
-      <div class="muted small">学习结束，记录一下这次的成果吧。现在不想填，点左上角「返回主页」，稍后回来继续。</div>
+      <div class="modal-head">
+        <h3>${esc(s.emoji)} ${esc(s.name)} · ${t.name}</h3>
+        <button type="button" class="modal-x" data-act="hide-form" aria-label="关闭，稍后再填" title="关闭（稍后再填）">✕</button>
+      </div>
+      <div class="muted small">学习结束，记录一下这次的成果吧。现在不想填，点右上角 ✕ 回到主页，稍后再继续。</div>
       <div class="time-box">
         <div>🕐 开始 <b>${fmtHMS(run.start)}</b> → 结束 <b>${fmtHMS(run.end)}</b></div>
         <div>⏱️ 有效学习 <b>${fmtMin(tm.activeMs / 60000)}</b>${tm.pausedMs > 0 ? `，暂停 ${fmtMin(tm.pausedMs / 60000)}` : ''}</div>
@@ -831,8 +833,10 @@
       </div>`;
     resultView = { id: s.id, fresh };
     openModal(`
-      <div class="modal-head"><button type="button" class="modal-back" data-act="close">← 返回主页</button></div>
-      <h3>${fresh ? '🎉 学习完成！' : '评分详情'}</h3>
+      <div class="modal-head">
+        <h3>${fresh ? '🎉 学习完成！' : '评分详情'}</h3>
+        <button type="button" class="modal-x" data-act="close" aria-label="关闭" title="关闭">✕</button>
+      </div>
       <div class="muted small">${esc(subj.emoji)} ${esc(subj.name)} · ${t.name} · ${fmtHM(s.start)}–${fmtHM(s.end)} · 有效 ${fmtMin(s.activeMin)}${amountSuffix(s, unit)}</div>
       <div class="score-rings">
         ${ring(s.focus, '专注度', 'var(--series-1)')}
@@ -1761,6 +1765,17 @@
     toast('已回到主页。这次学习还没保存，点「填写并保存」继续');
   }
 
+  // 点左上角「学习小站」：回到学习主页（填写中的表单内容会保留）
+  function goHome() {
+    if ($('#finish-form')) hideForm();
+    else if (!$('#modal').hidden) closeModal();
+    if (currentTab !== 'study') switchTab('study');
+    else {
+      renderStudy();
+      window.scrollTo(0, 0);
+    }
+  }
+
   function dismissModal() {
     if ($('#finish-form')) hideForm();
     else closeModal();
@@ -1815,6 +1830,7 @@
       case 'discard': discardStudy(); break;
       case 'back': resumeFromForm(); break;
       case 'hide-form': hideForm(); break;
+      case 'home': goHome(); break;
       case 'open-form': openFinishForm(); break;
       case 'voice': toggleVoice(); break;
       case 'photo': if (!cap.busy) $('#photo-input').click(); break;

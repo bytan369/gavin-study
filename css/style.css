@@ -95,6 +95,8 @@ button { cursor: pointer; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 18px; }
+.brand-home { border: 0; background: transparent; padding: 4px 6px; margin: -4px -6px; border-radius: 10px; display: flex; align-items: center; gap: 8px; font: inherit; color: inherit; }
+.brand-home:hover { background: var(--card-2); }
 .brand-logo { font-size: 22px; }
 .tabs { display: flex; gap: 4px; background: var(--card); padding: 4px; border-radius: 12px; box-shadow: var(--shadow); }
 .tab {
@@ -302,10 +304,19 @@ table.data th:first-child, table.data td:first-child { text-align: left; }
   animation: pop .2s ease;
 }
 /* 顶部「返回主页」和底部操作按钮固定在弹窗里，内容再长也不会看不到 */
-.modal-head { position: sticky; top: 0; z-index: 3; margin: -20px -20px 8px; padding: 10px 14px 6px; background: var(--card); }
-.modal-back { border: 0; background: var(--card-2); color: var(--text); padding: 8px 14px; border-radius: 99px; font-weight: 600; font-size: 14px; }
+/* top/bottom 取负的内边距：吸附在弹窗的真正边缘，滚动时内容不会从缝隙里露出来 */
+.modal-head {
+  position: sticky; top: -20px; z-index: 3; display: flex; align-items: flex-start; gap: 10px;
+  margin: -20px -20px 6px; padding: 16px 12px 8px 20px; background: var(--card);
+}
+.modal-head h3 { flex: 1; min-width: 0; margin: 6px 0 0; }
+.modal-x {
+  flex: none; width: 34px; height: 34px; border: 0; border-radius: 50%; padding: 0;
+  display: grid; place-items: center; background: var(--card-2); color: var(--text-2); font-size: 16px; line-height: 1;
+}
+.modal-x:hover { background: var(--line); color: var(--text); }
 .sticky-actions {
-  position: sticky; bottom: 0; z-index: 3; margin: 14px -20px -20px; padding: 10px 20px calc(12px + env(safe-area-inset-bottom));
+  position: sticky; bottom: -20px; z-index: 3; margin: 14px -20px -20px; padding: 10px 20px calc(12px + env(safe-area-inset-bottom));
   background: var(--card); border-top: 1px solid var(--line);
 }
 .sticky-actions .form-actions { margin-top: 0; }
