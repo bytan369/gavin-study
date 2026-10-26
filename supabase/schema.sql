@@ -63,3 +63,4 @@ grant select, insert, update, delete on public.study_sessions to authenticated;
 grant select, insert, update, delete on public.study_profile to authenticated;
 revoke all on public.study_sessions from anon;
 revoke all on public.study_profile from anon;
+revoke truncate, references, trigger on public.study_sessions, public.study_profile from authenticated;

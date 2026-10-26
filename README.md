@@ -32,6 +32,8 @@
 
 ## 云同步（Supabase）
 
+本仓库已经连接到 Supabase 项目 `gavin study`（`js/config.js` 已填好，数据表已建好），下面是从零搭建时的步骤，供参考。
+
 1. 在 [supabase.com](https://supabase.com) 注册并新建一个项目（免费版即可）。
 2. 打开项目的 **SQL Editor**，把 [`supabase/schema.sql`](supabase/schema.sql) 的全部内容粘贴进去运行一次。它会建好两张表，并开启行级安全（每个账号只能读写自己的数据）。
 3. 打开 **Project Settings → API**，复制 **Project URL** 和 **anon / publishable key**。
