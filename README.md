@@ -67,6 +67,18 @@
 
 在「设置 → AI 评估」里可以接入大模型，让 AI 根据学习量、时长、有效时间占比、走神次数、做题正确率、自评和你填的学习内容，给出**专注度**和**学习效果**评分，并附上点评和建议。没开启、没配置好或 AI 调用失败时，自动用上面的默认算法评分，不会耽误记录。
 
+### 学习小站云端 AI（默认，不用每台设备填密钥）
+
+服务商列表第一项是「学习小站云端 AI」：密钥只在 Supabase 云端存一次，所有登录了云同步账号的设备（电脑、iPad、手机）都直接用，不用各自填密钥，也没有浏览器跨域问题。新设备打开网页时会默认选它。
+
+- 一次性设置：注册 [硅基流动](https://cloud.siliconflow.cn)，在 [API 密钥](https://cloud.siliconflow.cn/account/ak) 页面新建一个密钥，然后到 Supabase 控制台 [Edge Functions → Secrets](https://supabase.com/dashboard/project/xvltwxmemntfjgwnekaq/functions/secrets) 添加 `AI_API_KEY` = 这个密钥。之后在「设置 → AI 评估」点「测试连接」确认。
+- 默认用硅基流动的免费模型 `Qwen/Qwen3-8B`。想换服务商或模型，在 Secrets 里加 `AI_PROVIDER`（如 `deepseek`）、`AI_BASE_URL`、`AI_MODEL` 即可，网页不用改。
+- 只有登录的账号能用，每人每天最多 60 次（`AI_DAILY_LIMIT` 可改）；云端只接收这次学习的科目、时长、学习量、自评、学习内容等字段，不能当通用聊天接口用。
+- 用到的东西：`supabase/functions/ai-evaluate`（云函数，和网页共用 `js/ai.js`）、`supabase/ai_evaluate.sql`（记录调用次数的表，只有云函数能读写）。
+- **隐私**：免费模型的输入可能被服务商用于改进模型。不想这样可以换成付费模型，或者在设置里改用自己的密钥直连。
+
+### 自己填密钥直连服务商
+
 - 可选服务商和默认模型（2026 年 10 月核对过各家官方文档；接口地址、模型名称都可以自己改，点「获取列表」能拉取服务商当前全部模型）：
 
   | 服务商 | 默认模型 | 其他预设 | 说明 |
