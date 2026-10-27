@@ -35,7 +35,7 @@
 
   // rate：该学习方式的参考速度（单位/分钟），用来把「学习量」换算成效率
   const TYPES = [
-    { id: 'practice', name: '做题练习', icon: '✏️', unit: '题', correct: 'required', rate: (s) => s.quiz || 0.5, hint: '完成的题目数' },
+    { id: 'practice', name: '做题练习', icon: '✏️', unit: '题', correct: 'optional', rate: (s) => s.quiz || 0.5, hint: '完成的题目数，做对几题知道就填' },
     { id: 'homework', name: '写作业', icon: '📒', unit: '题', correct: 'optional', rate: (s) => (s.quiz || 0.5) * 0.9, hint: '完成的作业题数，正确数知道就填' },
     { id: 'reading', name: '阅读/预习', icon: '📚', unit: '页', rate: () => 0.8, hint: '读完的课本或书籍页数' },
     { id: 'memorize', name: '背诵/记忆', icon: '🧠', unit: '个', rate: () => 1, hint: '记住的单词、公式、古诗句或知识点个数' },
