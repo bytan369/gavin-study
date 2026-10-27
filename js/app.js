@@ -669,7 +669,6 @@
     let error = '';
     if (amount !== null && (!Number.isFinite(amount) || amount < 0)) error = '学习量要填 0 或更大的数字，不想填可以留空';
     else if (amount === null && correct !== null) error = '填了做对的题数，请同时填写完成的题数；都不想填就都留空';
-    else if (t.correct === 'required' && amount > 0 && correct === null) error = '请填写做对的题数（不想填学习量的话，两项都留空）';
     else if (correct !== null && (!Number.isFinite(correct) || correct < 0 || correct > amount)) error = '做对的题数应在 0 到总题数之间';
     if (error) {
       form.error = error;
