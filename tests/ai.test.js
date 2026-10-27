@@ -13,11 +13,11 @@ const reply = (status, body) => async () => ({ ok: status >= 200 && status < 300
 
 test('服务商列表：最新模型，有免费选项，不含浏览器调不通的服务商', () => {
   const ids = AI.PROVIDERS.map((p) => p.id);
-  assert.deepStrictEqual(ids, ['deepseek', 'qwen', 'siliconflow', 'minimax', 'kimi', 'custom']);
+  assert.deepStrictEqual(ids, ['cloud', 'deepseek', 'qwen', 'siliconflow', 'minimax', 'kimi', 'custom']);
   for (const id of ['zhipu', 'hunyuan', 'doubao', 'spark', 'qianfan']) assert.ok(!ids.includes(id), `${id} 的接口会被浏览器拦截，不应出现在预设里`);
   const def = Object.fromEntries(AI.PROVIDERS.map((p) => [p.id, p.model]));
-  assert.deepStrictEqual(def, { deepseek: 'deepseek-flash', qwen: 'qwen3.8-flash', siliconflow: 'Qwen/Qwen3-8B', minimax: 'MiniMax-M3.1-Flash', kimi: 'kimi-k3', custom: '' });
-  for (const p of AI.PROVIDERS.filter((x) => x.id !== 'custom')) {
+  assert.deepStrictEqual(def, { cloud: '', deepseek: 'deepseek-flash', qwen: 'qwen3.8-flash', siliconflow: 'Qwen/Qwen3-8B', minimax: 'MiniMax-M3.1-Flash', kimi: 'kimi-k3', custom: '' });
+  for (const p of AI.PROVIDERS.filter((x) => x.id !== 'custom' && x.id !== 'cloud')) {
     assert.match(p.baseUrl, /^https:\/\//);
     assert.ok(p.models.some((m) => m.id === p.model), `${p.id} 的默认模型要在列表里`);
   }
@@ -38,7 +38,7 @@ test('旧的默认模型和已下线的模型自动换成新模型；用户自�
   assert.strictEqual(c.configs.kimi.model, 'kimi-k3');
   assert.strictEqual(AI.normalizeConfig({ configs: { deepseek: { model: 'deepseek-v4-pro' } } }).configs.deepseek.model, 'deepseek-v4-pro');
   // 以前选了已移除的服务商（混元、豆包）：退回默认服务商，不报错
-  assert.strictEqual(AI.normalizeConfig({ provider: 'hunyuan', configs: { hunyuan: { key: 'x' } } }).provider, 'deepseek');
+  assert.strictEqual(AI.normalizeConfig({ provider: 'hunyuan', configs: { hunyuan: { key: 'x' } } }).provider, 'cloud');
 });
 
 test('各服务商的附加参数：关闭思考模式', () => {
@@ -71,7 +71,7 @@ test('配置读取：补全缺项、丢弃非法内容、每个服务商各存�
   assert.strictEqual(c.configs.deepseek.key, '');
   assert.ok(!('evil' in c.configs));
   assert.strictEqual(AI.normalizeConfig(null).enabled, false);
-  assert.strictEqual(AI.normalizeConfig({ enabled: 'yes', provider: 'nope' }).provider, 'deepseek');
+  assert.strictEqual(AI.normalizeConfig({ enabled: 'yes', provider: 'nope' }).provider, 'cloud');
 });
 
 test('提示词：包含学习量、参考量、自评，没填学习量时明确说明', () => {
@@ -162,4 +162,8 @@ test('测试连接和模型列表', async () => {
   assert.deepStrictEqual(m, ['deepseek-chat', 'deepseek-reasoner']);
   assert.strictEqual(url, 'https://api.deepseek.com/models');
   await assert.rejects(AI.testConnection({ ...cfg, key: '' }), /密钥/);
+});
+
+test('云端 AI 不需要在网页上填地址、模型和密钥', () => {
+  assert.strictEqual(AI.validateConfig({ provider: 'cloud', baseUrl: '', model: '', key: '' }), null);
 });

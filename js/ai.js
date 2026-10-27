@@ -7,13 +7,17 @@
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.AI = api;
-})(typeof self !== 'undefined' ? self : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : self, function () {
   'use strict';
 
   // 以下服务商的接口都在浏览器里实测过可以从网页直接调用（2026 年 10 月）。模型名可以在设置里改，
   // 「获取列表」能拉取服务商当前可用的全部模型。tag 会显示在模型下拉提示里。
   // 腾讯混元（TokenHub）、豆包（火山方舟）、智谱、讯飞星火、百度千帆的接口会被浏览器的跨域限制拦截，所以没有放进来。
   const PROVIDERS = [
+    {
+      // 家长在 Supabase 云端配置一次密钥，所有登录的设备共用（见 supabase/functions/ai-evaluate）
+      id: 'cloud', name: '学习小站云端 AI（免费，不用填密钥）', baseUrl: '', model: '', models: [], keyUrl: '', cloud: true,
+    },
     {
       id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash',
       models: [{ id: 'deepseek-flash', tag: 'V4.1 Flash，快、便宜（推荐）' }, { id: 'deepseek-v4-pro', tag: 'V4 Pro，更强' }],
@@ -106,6 +110,7 @@
   // 返回 null 表示配置可用，否则是中文原因
   function validateConfig(c) {
     if (!c) return '还没有配置';
+    if (c.provider === 'cloud') return null; // 云端 AI 不需要在网页上填写，登录状态由网页另外检查
     const url = normalizeBaseUrl(c.baseUrl);
     if (!url) return '请填写接口地址';
     if (!isSafeBaseUrl(url)) return '接口地址必须以 https:// 开头';

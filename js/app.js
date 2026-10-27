@@ -8,6 +8,7 @@
   const NOTE_MAX = 2000;
   const KEY = 'gavin-study-v1';
   const AI_KEY = 'gavin-study-ai-v1'; // AI 设置（含密钥）单独存放，不进入云同步和备份文件
+  const AI_CLOUD_DEFAULT_KEY = 'gavin-study-ai-cloud-default'; // 是否已经把这台设备默认切到云端 AI
   const DAY = 86400000;
   const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const FOCUS_RATE = [['😵', '很分心'], ['😕', '有点分心'], ['😐', '一般'], ['🙂', '比较专注'], ['😎', '非常专注']];
@@ -56,12 +57,31 @@
     return d;
   }
 
+  // 云端 AI 部署好之后，config.js 里 cloudAI 为 true（函数声明会提前生效，启动时 loadAi 就能用）
+  function cloudAiAvailable() {
+    return !!(window.STUDY_CONFIG && window.STUDY_CONFIG.cloudAI) && Cloud.isConfigured();
+  }
+
   function loadAi() {
+    let cfg;
     try {
-      return AI.normalizeConfig(JSON.parse(localStorage.getItem(AI_KEY)));
+      cfg = AI.normalizeConfig(JSON.parse(localStorage.getItem(AI_KEY)));
     } catch (e) {
-      return AI.emptyConfig();
+      cfg = AI.emptyConfig();
     }
+    // 没有自己填过任何密钥的设备，默认改用云端 AI 并打开（只做一次，之后尊重自己的选择）
+    try {
+      const hasKey = Object.values(cfg.configs).some((c) => c.key);
+      if (cloudAiAvailable() && !hasKey && !localStorage.getItem(AI_CLOUD_DEFAULT_KEY)) {
+        cfg.provider = 'cloud';
+        cfg.enabled = true;
+        localStorage.setItem(AI_CLOUD_DEFAULT_KEY, '1');
+        localStorage.setItem(AI_KEY, JSON.stringify(cfg));
+      }
+    } catch (e) { /* 存储不可用时按默认配置 */ }
+    // 云端 AI 不可用时（比如没配置云同步），不能停在 cloud 上
+    if (cfg.provider === 'cloud' && !cloudAiAvailable()) cfg.provider = 'deepseek';
+    return cfg;
   }
 
   function saveAi() {
@@ -73,7 +93,11 @@
   }
 
   const aiCurrent = () => Object.assign({ provider: ai.provider }, ai.configs[ai.provider]);
-  const aiReady = () => ai.enabled && !AI.validateConfig(aiCurrent());
+  const aiReady = () => {
+    if (!ai.enabled) return false;
+    if (ai.provider === 'cloud') return cloudAiAvailable() && !!Cloud.getUser();
+    return !AI.validateConfig(aiCurrent());
+  };
 
   // 只写本地
   function persist() {
@@ -769,14 +793,22 @@
     aiErrors.delete(id);
     refreshAiViews(id);
     try {
-      const r = await AI.evaluate(cfg, buildAiInput(s));
+      let r;
+      let model = cfg.model;
+      if (cfg.provider === 'cloud') {
+        const res = await Cloud.aiEvaluate(buildAiInput(s));
+        r = res.result;
+        model = res.model;
+      } else {
+        r = await AI.evaluate(cfg, buildAiInput(s));
+      }
       const cur = state.sessions.find((x) => x.id === id);
       if (!cur) return; // 评估期间记录被删除了
       if (!cur.rule) cur.rule = { focus: cur.focus, effect: cur.effect, focusParts: cur.focusParts, effectParts: cur.effectParts, metrics: cur.metrics, tips: cur.tips };
       cur.focus = r.focus;
       cur.effect = r.effect;
       if (r.tips.length) cur.tips = r.tips;
-      cur.ai = { provider: cfg.provider, model: cfg.model, focusReason: r.focusReason, effectReason: r.effectReason, at: Date.now() };
+      cur.ai = { provider: cfg.provider, model, focusReason: r.focusReason, effectReason: r.effectReason, at: Date.now() };
       markSession(id);
       save();
     } catch (e) {
@@ -1374,8 +1406,15 @@
   let aiMsg = { text: '', tone: '' };
   let aiModels = [];
 
+  let cloudStatus = null; // 云端 AI 是否配置好了密钥：null=还没查，true/false，'error'
+
   function aiStatusLine() {
     if (!ai.enabled) return '';
+    if (ai.provider === 'cloud') {
+      if (!Cloud.getUser()) return '⚠️ 请先在上面登录云同步账号，登录后才能用云端 AI。没登录时用默认算法评分。';
+      if (cloudStatus === false) return '⚠️ 云端 AI 还没配置好（家长还没在 Supabase 里填入 AI_API_KEY），暂时用默认算法评分。';
+      return '✅ 已就绪：每次学习结束后会自动用云端 AI 评分。';
+    }
     const bad = AI.validateConfig(aiCurrent());
     return bad ? `⚠️ 还没配置完整：${bad}。配置好之前会用默认算法评分。` : '✅ 已就绪：每次学习结束后会自动用 AI 评分。';
   }
@@ -1385,6 +1424,15 @@
     if (!el) return;
     const p = AI.getProvider(ai.provider);
     const c = ai.configs[ai.provider];
+    const isCloud = ai.provider === 'cloud';
+    const providers = AI.PROVIDERS.filter((x) => x.id !== 'cloud' || cloudAiAvailable());
+    if (isCloud && cloudStatus === null) {
+      cloudStatus = 'checking';
+      Cloud.aiStatus().then((r) => { cloudStatus = !!(r && r.configured); }, () => { cloudStatus = 'error'; }).finally(() => {
+        const line = $('#ai-status-line');
+        if (line) line.textContent = aiStatusLine();
+      });
+    }
     // 预设模型带说明（如“免费”“推荐”），再加上从服务商拉取到的列表
     const known = new Set(p.models.map((m) => m.id));
     const models = p.models.concat(aiModels.filter((id) => !known.has(id)).map((id) => ({ id, tag: '' })));
@@ -1397,8 +1445,11 @@
       <div class="ai-status-line small" id="ai-status-line">${esc(aiStatusLine())}</div>
       <div class="field" style="margin-top:12px">
         <label for="ai-provider">大模型服务商</label>
-        <select class="input" id="ai-provider">${AI.PROVIDERS.map((x) => `<option value="${x.id}" ${x.id === ai.provider ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+        <select class="input" id="ai-provider">${providers.map((x) => `<option value="${x.id}" ${x.id === ai.provider ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
       </div>
+      ${isCloud ? `<div class="ai-cloud-info small">
+        家长已经在云端配置好了大模型（默认用硅基流动的免费模型 Qwen3-8B），登录云同步账号的手机、iPad、电脑都能直接用，<b>不用填密钥</b>。每人每天最多评估 60 次。
+      </div>` : `
       <div class="field">
         <label for="ai-base">接口地址</label>
         <input class="input" id="ai-base" value="${esc(c.baseUrl)}" placeholder="https://…/v1" autocomplete="off" spellcheck="false">
@@ -1420,13 +1471,15 @@
           <button class="btn small" type="button" data-act="ai-showkey">显示</button>
         </div>
         <div class="help">${p.keyUrl ? `在 <a href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">服务商控制台</a> 创建密钥。` : ''}密钥只保存在这台设备的浏览器里，不会上传云端、也不在备份文件里；退出登录时会清除。</div>
-      </div>
+      </div>`}
       <div class="row">
         <button class="btn btn-primary" type="button" data-act="ai-test">测试连接</button>
-        <button class="btn btn-ghost" type="button" data-act="ai-clearkey">清除密钥</button>
+        ${isCloud ? '' : '<button class="btn btn-ghost" type="button" data-act="ai-clearkey">清除密钥</button>'}
         <span class="small report-msg ${aiMsg.tone}" id="ai-msg" role="status">${esc(aiMsg.text)}</span>
       </div>
-      <p class="muted small" style="margin:10px 0 0">隐私提示：开启后，每次学习结束时，这次学习的科目、时长、学习量、自评分和你填写的学习内容会发送给所选的大模型服务商用于评分，可能产生少量接口费用。</p>`;
+      <p class="muted small" style="margin:10px 0 0">${isCloud
+        ? '隐私提示：开启后，每次学习结束时，这次学习的科目、时长、学习量、自评分和你填写的学习内容会经 Supabase 云端发送给硅基流动用于评分。免费模型的输入输出可能会被服务商用于改进模型，学习内容里请不要写姓名、学校等个人信息。'
+        : '隐私提示：开启后，每次学习结束时，这次学习的科目、时长、学习量、自评分和你填写的学习内容会发送给所选的大模型服务商用于评分，可能产生少量接口费用。'}</p>`;
   }
 
   function setAiMsg(text, tone) {
@@ -1452,7 +1505,13 @@
     if (btn) btn.disabled = true;
     setAiMsg('正在测试…', 'live');
     try {
-      const r = await AI.testConnection(aiCurrent());
+      if (ai.provider === 'cloud' && !Cloud.getUser()) throw new Error('请先在上面登录云同步账号');
+      const r = ai.provider === 'cloud' ? await Cloud.aiPing() : await AI.testConnection(aiCurrent());
+      if (ai.provider === 'cloud') {
+        cloudStatus = true;
+        const line = $('#ai-status-line');
+        if (line) line.textContent = aiStatusLine();
+      }
       setAiMsg(`✅ 连接成功（${(r.ms / 1000).toFixed(1)} 秒），模型回复：${r.reply || '（空）'}`, 'ok');
     } catch (e) {
       setAiMsg(e.message || '连接失败', 'err');
@@ -1624,6 +1683,8 @@
     const uid = u ? u.id : null;
     if (uid !== lastUid) {
       lastUid = uid;
+      const line = $('#ai-status-line');
+      if (line) line.textContent = aiStatusLine();
       if (currentTab === 'settings') renderSyncCard();
       if (currentTab === 'study' && !state.running) renderStudy();
     }
@@ -1646,7 +1707,9 @@
     form = null;
     expanded.clear();
     ai = AI.emptyConfig(); // 退出登录时一并清除 AI 密钥，方便在公用设备上使用
+    if (ai.provider === 'cloud' && !cloudAiAvailable()) ai.provider = 'deepseek';
     saveAi();
+    try { localStorage.removeItem(AI_CLOUD_DEFAULT_KEY); } catch (e) { /* 忽略 */ }
     if (!$('#modal').hidden) closeModal();
     persist();
     applyTheme();

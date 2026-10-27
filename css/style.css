@@ -514,3 +514,5 @@ details.rule-detail summary { cursor: pointer; color: var(--text-2); font-size: 
 .model-chips .chip { font-size: 12px; padding: 4px 10px; }
 .model-chips .chip small { color: var(--muted); margin-left: 2px; }
 .model-chips .chip.selected small { color: inherit; }
+
+.ai-cloud-info { margin: 12px 0; padding: 10px 12px; border-radius: 10px; background: var(--good-soft); color: var(--text); line-height: 1.6; }

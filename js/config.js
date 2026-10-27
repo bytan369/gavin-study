@@ -9,4 +9,6 @@ window.STUDY_CONFIG = {
   supabaseAnonKey: 'sb_publishable_Z5LA0ATwv8KggyZ73cGApg_7XeMNqoM',
   // 每晚邮件日报：云端函数 daily-report 和定时任务（supabase/daily_report.sql）部署好之后改成 true
   dailyReport: false,
+  // 云端 AI 评估：云端函数 ai-evaluate 部署好之后为 true，设置里会出现「学习小站云端 AI」
+  cloudAI: true,
 };

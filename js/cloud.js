@@ -353,6 +353,31 @@
     if (error) throw new Error(translateError(error));
   }
 
+  // 调用云端函数，出错时取出函数返回的中文原因
+  async function invokeFn(name, body, notFoundMsg) {
+    if (!client) throw new Error('云同步还没连上，请稍后再试');
+    const { data, error } = await client.functions.invoke(name, { body });
+    if (error) {
+      let msg = '';
+      const res = error.context;
+      try { msg = (await res.json()).error || ''; } catch (e) { /* 响应不是 JSON */ }
+      if (!msg && res && res.status === 404) msg = notFoundMsg;
+      throw new Error(msg || translateError(error));
+    }
+    return data;
+  }
+
+  // 云端 AI：status 不需要登录；ping / evaluate 用登录令牌确认身份
+  const aiStatus = () => invokeFn('ai-evaluate', { mode: 'status' }, '云端 AI 还没有部署');
+  async function aiPing() {
+    if (!user) throw new Error('请先登录云同步账号');
+    return invokeFn('ai-evaluate', { mode: 'ping' }, '云端 AI 还没有部署');
+  }
+  async function aiEvaluate(input) {
+    if (!user) throw new Error('请先登录云同步账号');
+    return invokeFn('ai-evaluate', { mode: 'evaluate', input }, '云端 AI 还没有部署');
+  }
+
   // 让云端立刻给自己发一封今天的日报（测试邮件）。云端函数用登录令牌确认身份
   async function sendTestReport() {
     if (!client || !user) throw new Error('请先登录');
@@ -383,7 +408,7 @@
     // 纯函数（供测试）
     emptySync, ensureSync, serializeRunning, sanitizeSettings, mergeRemoteSessions, applyRemoteProfile, pendingCount, translateError,
     // 浏览器端
-    init, schedule, syncNow: sync, sendTestReport, signIn, signUp, resetPassword, updatePassword, signOut, isConfigured,
+    init, schedule, syncNow: sync, sendTestReport, aiStatus, aiPing, aiEvaluate, signIn, signUp, resetPassword, updatePassword, signOut, isConfigured,
     getUser: () => user,
     getStatus: () => status,
   };
